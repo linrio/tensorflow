@@ -55,7 +55,7 @@ the gradients using a few arguments:
   train_op = tf.contrib.training.create_train_op(
       total_loss,
       optimizer,
-      clip_gradient_norm=4)
+      transform_grads_fn=clip_gradient_norms_fn(3))
 
   # Create the train_op and scale the gradients by providing a map from variable
   # name (or variable) to a scaling coefficient:
@@ -244,8 +244,6 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from tensorflow.contrib.framework.python.ops import variables
-from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import clip_ops
@@ -255,12 +253,14 @@ from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.summary import summary
 from tensorflow.python.training import monitored_session
 from tensorflow.python.training import optimizer as tf_optimizer
+from tensorflow.python.training import training_util
 
 # TODO(nsilberman): move add_gradients_summaries, clip_gradient_norms and
 # multiply_gradients into contrib/summaries and contrib/optimizers.py
 __all__ = [
     'add_gradients_summaries',
     'clip_gradient_norms',
+    'clip_gradient_norms_fn',
     'create_train_op',
     'multiply_gradients',
     'train',
@@ -316,6 +316,13 @@ def clip_gradient_norms(gradients_to_variables, max_norm):
   return clipped_grads_and_vars
 
 
+def clip_gradient_norms_fn(max_norm):
+  """Returns a `transform_grads_fn` function for gradient clipping."""
+  def clip_norms(gradients_to_variables):
+    return clip_gradient_norms(gradients_to_variables, max_norm)
+  return clip_norms
+
+
 def multiply_gradients(grads_and_vars, gradient_multipliers):
   """Multiply specified gradients.
 
@@ -346,11 +353,11 @@ def multiply_gradients(grads_and_vars, gradient_multipliers):
         raise ValueError('Requested multiple of `None` gradient.')
 
       if isinstance(grad, ops.IndexedSlices):
-        tmp = grad.values * constant_op.constant(
+        tmp = grad.values * ops.convert_to_tensor(
             gradient_multipliers[key], dtype=grad.dtype)
         grad = ops.IndexedSlices(tmp, grad.indices, grad.dense_shape)
       else:
-        grad *= constant_op.constant(
+        grad *= ops.convert_to_tensor(
             gradient_multipliers[key], dtype=grad.dtype)
     multiplied_grads_and_vars.append((grad, var))
   return multiplied_grads_and_vars
@@ -368,7 +375,8 @@ def create_train_op(total_loss,
                     summarize_gradients=False,
                     gate_gradients=tf_optimizer.Optimizer.GATE_OP,
                     aggregation_method=None,
-                    colocate_gradients_with_ops=False):
+                    colocate_gradients_with_ops=False,
+                    check_numerics=True):
   """Creates an `Operation` that evaluates the gradients and returns the loss.
 
   Args:
@@ -393,13 +401,14 @@ def create_train_op(total_loss,
       Valid values are defined in the class `AggregationMethod`.
     colocate_gradients_with_ops: Whether or not to try colocating the gradients
       with the ops that generated them.
+    check_numerics: Whether or not we apply check_numerics.
 
   Returns:
     A `Tensor` that when evaluated, computes the gradients and returns the total
       loss value.
   """
   if global_step is _USE_GLOBAL_STEP:
-    global_step = variables.get_or_create_global_step()
+    global_step = training_util.get_or_create_global_step()
 
   # Update ops use GraphKeys.UPDATE_OPS collection if update_ops is None.
   global_update_ops = set(ops.get_collection(ops.GraphKeys.UPDATE_OPS))
@@ -409,7 +418,7 @@ def create_train_op(total_loss,
     update_ops = set(update_ops)
   if not global_update_ops.issubset(update_ops):
     logging.warning('update_ops in create_train_op does not contain all the '
-                    ' update_ops in GraphKeys.UPDATE_OPS')
+                    'update_ops in GraphKeys.UPDATE_OPS')
 
   # Make sure update_ops are computed before total_loss.
   if update_ops:
@@ -423,7 +432,7 @@ def create_train_op(total_loss,
   else:
     # Make sure that variables_to_train are in tf.trainable_variables()
     for v in variables_to_train:
-      assert v in tf_variables.trainable_variables()
+      assert v.trainable or v in tf_variables.trainable_variables()
 
   assert variables_to_train
 
@@ -449,11 +458,19 @@ def create_train_op(total_loss,
 
   with ops.name_scope('train_op'):
     # Make sure total_loss is valid.
-    total_loss = array_ops.check_numerics(total_loss,
-                                          'LossTensor is inf or nan')
+    if check_numerics:
+      total_loss = array_ops.check_numerics(total_loss,
+                                            'LossTensor is inf or nan')
 
     # Ensure the train_tensor computes grad_updates.
-    return control_flow_ops.with_dependencies([grad_updates], total_loss)
+    train_op = control_flow_ops.with_dependencies([grad_updates], total_loss)
+
+  # Add the operation used for training to the 'train_op' collection
+  train_ops = ops.get_collection_ref(ops.GraphKeys.TRAIN_OP)
+  if train_op not in train_ops:
+    train_ops.append(train_op)
+
+  return train_op
 
 
 def train(train_op,
@@ -465,7 +482,9 @@ def train(train_op,
           chief_only_hooks=None,
           save_checkpoint_secs=600,
           save_summaries_steps=100,
-          config=None):
+          config=None,
+          max_wait_secs=7200,
+          run_metadata=None):
   """Runs the training loop.
 
   Args:
@@ -488,6 +507,11 @@ def train(train_op,
       `save_summaries_steps` is set to `None`, then the default summary saver
       isn't used.
     config: An instance of `tf.ConfigProto`.
+    max_wait_secs: Maximum time workers should wait for the session to
+      become available. This should be kept relatively short to help detect
+      incorrect code, but sometimes may need to be increased if the chief takes
+      a while to start up.
+    run_metadata: A [`RunMetadata`] protocol buffer.
 
   Returns:
     the value of the loss function after training.
@@ -514,8 +538,9 @@ def train(train_op,
       chief_only_hooks=chief_only_hooks,
       save_checkpoint_secs=save_checkpoint_secs,
       save_summaries_steps=save_summaries_steps,
-      config=config) as session:
+      config=config,
+      max_wait_secs=max_wait_secs) as session:
     loss = None
     while not session.should_stop():
-      loss = session.run(train_op)
+      loss = session.run(train_op, run_metadata=run_metadata)
   return loss

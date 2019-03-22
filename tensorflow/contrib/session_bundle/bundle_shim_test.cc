@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "tensorflow/contrib/session_bundle/bundle_shim.h"
 
+#include "google/protobuf/any.pb.h"
 #include "tensorflow/cc/saved_model/signature_constants.h"
 #include "tensorflow/cc/saved_model/tag_constants.h"
 #include "tensorflow/contrib/session_bundle/test_util.h"
@@ -32,8 +33,6 @@ namespace {
 
 constexpr char kSessionBundlePath[] =
     "session_bundle/testdata/half_plus_two/00000123";
-constexpr char kSessionBundleMetaGraphFilename[] = "export.meta";
-constexpr char kSessionBundleVariablesFilename[] = "export-00000-of-00001";
 constexpr char kSavedModelBundlePath[] =
     "cc/saved_model/testdata/half_plus_two/00000123";
 
@@ -64,12 +63,16 @@ void ValidateHalfPlusTwo(const SavedModelBundle& saved_model_bundle,
 
 void LoadAndValidateSavedModelBundle(const string& export_dir,
                                      const std::unordered_set<string>& tags,
-                                     const string& signature_def_key) {
+                                     const string& signature_def_key,
+                                     bool expect_session_bundle) {
   SessionOptions session_options;
   RunOptions run_options;
   SavedModelBundle saved_model_bundle;
+  bool is_session_bundle = false;
   TF_ASSERT_OK(LoadSessionBundleOrSavedModelBundle(
-      session_options, run_options, export_dir, tags, &saved_model_bundle));
+      session_options, run_options, export_dir, tags, &saved_model_bundle,
+      &is_session_bundle));
+  EXPECT_EQ(expect_session_bundle, is_session_bundle);
   const MetaGraphDef meta_graph_def = saved_model_bundle.meta_graph_def;
   const auto& signature_def_map = meta_graph_def.signature_def();
 
@@ -83,13 +86,29 @@ void LoadAndValidateSavedModelBundle(const string& export_dir,
   TensorInfo input_tensor_info =
       regression_signature_def.inputs().find(kRegressInputs)->second;
   EXPECT_EQ(1, regression_signature_def.outputs_size());
+  // Ensure the TensorInfo has dtype populated.
+  EXPECT_EQ(DT_STRING, input_tensor_info.dtype());
 
   ASSERT_FALSE(regression_signature_def.outputs().find(kRegressOutputs) ==
                regression_signature_def.outputs().end());
   TensorInfo output_tensor_info =
       regression_signature_def.outputs().find(kRegressOutputs)->second;
+  // Ensure the TensorInfo has dtype populated.
+  EXPECT_EQ(DT_FLOAT, output_tensor_info.dtype());
   ValidateHalfPlusTwo(saved_model_bundle, input_tensor_info.name(),
                       output_tensor_info.name());
+}
+
+// Helper function to validate that the SignatureDef found in the MetaGraphDef
+// with the provided key has the expected string representation.
+void ValidateSignatureDef(const MetaGraphDef& meta_graph_def, const string& key,
+                          const string& expected_string_signature_def) {
+  tensorflow::SignatureDef expected_signature;
+  CHECK(protobuf::TextFormat::ParseFromString(expected_string_signature_def,
+                                              &expected_signature));
+  auto iter = meta_graph_def.signature_def().find(key);
+  ASSERT_TRUE(iter != meta_graph_def.signature_def().end());
+  EXPECT_EQ(expected_signature.DebugString(), iter->second.DebugString());
 }
 
 // Checks that the input map in a signature def is populated correctly.
@@ -97,7 +116,13 @@ TEST(BundleShimTest, AddInputToSignatureDef) {
   SignatureDef signature_def;
   const string tensor_name = "foo_tensor";
   const string map_key = "foo_key";
-  AddInputToSignatureDef(tensor_name, map_key, &signature_def);
+
+  // Build a map of tensor-name to dtype, for the unit-test.
+  std::unordered_map<string, DataType> tensor_name_to_dtype;
+  tensor_name_to_dtype[tensor_name] = tensorflow::DT_STRING;
+
+  AddInputToSignatureDef(tensor_name, tensor_name_to_dtype, map_key,
+                         &signature_def);
   EXPECT_EQ(1, signature_def.inputs_size());
   EXPECT_EQ(tensor_name, signature_def.inputs().find(map_key)->second.name());
 }
@@ -107,7 +132,13 @@ TEST(BundleShimTest, AddOutputToSignatureDef) {
   SignatureDef signature_def;
   const string tensor_name = "foo_tensor";
   const string map_key = "foo_key";
-  AddOutputToSignatureDef(tensor_name, map_key, &signature_def);
+
+  // Build a map of tensor-name to dtype, for the unit-test.
+  std::unordered_map<string, DataType> tensor_name_to_dtype;
+  tensor_name_to_dtype[tensor_name] = tensorflow::DT_STRING;
+
+  AddOutputToSignatureDef(tensor_name, tensor_name_to_dtype, map_key,
+                          &signature_def);
   EXPECT_EQ(1, signature_def.outputs_size());
   EXPECT_EQ(tensor_name, signature_def.outputs().find(map_key)->second.name());
 }
@@ -116,7 +147,7 @@ TEST(BundleShimTest, AddOutputToSignatureDef) {
 TEST(BundleShimTest, DefaultSignatureMissing) {
   MetaGraphDef meta_graph_def;
   // Signatures signatures;
-  ConvertSignaturesToSignatureDefs(&meta_graph_def);
+  TF_EXPECT_OK(ConvertSignaturesToSignatureDefs(&meta_graph_def));
   EXPECT_EQ(0, meta_graph_def.signature_def_size());
 }
 
@@ -130,7 +161,7 @@ TEST(BundleShimTest, DefaultSignatureEmpty) {
       .mutable_any_list()
       ->add_value()
       ->PackFrom(signatures);
-  ConvertSignaturesToSignatureDefs(&meta_graph_def);
+  TF_EXPECT_OK(ConvertSignaturesToSignatureDefs(&meta_graph_def));
   EXPECT_EQ(0, meta_graph_def.signature_def_size());
 }
 
@@ -146,7 +177,7 @@ TEST(BundleShimTest, DefaultSignatureRegression) {
       .mutable_any_list()
       ->add_value()
       ->PackFrom(signatures);
-  ConvertSignaturesToSignatureDefs(&meta_graph_def);
+  TF_EXPECT_OK(ConvertSignaturesToSignatureDefs(&meta_graph_def));
   EXPECT_EQ(1, meta_graph_def.signature_def_size());
   const auto actual_signature_def =
       meta_graph_def.signature_def().find(kDefaultServingSignatureDefKey);
@@ -174,7 +205,7 @@ TEST(BundleShimTest, DefaultSignatureClassification) {
       .mutable_any_list()
       ->add_value()
       ->PackFrom(signatures);
-  ConvertSignaturesToSignatureDefs(&meta_graph_def);
+  TF_EXPECT_OK(ConvertSignaturesToSignatureDefs(&meta_graph_def));
   EXPECT_EQ(1, meta_graph_def.signature_def_size());
   const auto actual_signature_def =
       meta_graph_def.signature_def().find(kDefaultServingSignatureDefKey);
@@ -209,20 +240,8 @@ TEST(BundleShimTest, DefaultSignatureGeneric) {
       .mutable_any_list()
       ->add_value()
       ->PackFrom(signatures);
-  ConvertSignaturesToSignatureDefs(&meta_graph_def);
+  TF_EXPECT_OK(ConvertSignaturesToSignatureDefs(&meta_graph_def));
   EXPECT_EQ(0, meta_graph_def.signature_def_size());
-}
-
-// Helper function to validate that the SignatureDef found in the MetaGraphDef
-// with the provided key has the expected string representation.
-void ValidateSignatureDef(const MetaGraphDef& meta_graph_def, const string& key,
-                          const string& expected_string_signature_def) {
-  tensorflow::SignatureDef expected_signature;
-  CHECK(protobuf::TextFormat::ParseFromString(expected_string_signature_def,
-                                              &expected_signature));
-  auto iter = meta_graph_def.signature_def().find(key);
-  ASSERT_TRUE(iter != meta_graph_def.signature_def().end());
-  EXPECT_EQ(expected_signature.DebugString(), iter->second.DebugString());
 }
 
 TEST(BundleShimTest, NamedRegressionSignatures) {
@@ -245,7 +264,7 @@ TEST(BundleShimTest, NamedRegressionSignatures) {
       .mutable_any_list()
       ->add_value()
       ->PackFrom(signatures);
-  ConvertSignaturesToSignatureDefs(&meta_graph_def);
+  TF_EXPECT_OK(ConvertSignaturesToSignatureDefs(&meta_graph_def));
   ASSERT_EQ(2, meta_graph_def.signature_def_size());
 
   ValidateSignatureDef(meta_graph_def, "foo",
@@ -299,7 +318,7 @@ TEST(BundleShimTest, NamedClassificationSignatures) {
       .mutable_any_list()
       ->add_value()
       ->PackFrom(signatures);
-  ConvertSignaturesToSignatureDefs(&meta_graph_def);
+  TF_EXPECT_OK(ConvertSignaturesToSignatureDefs(&meta_graph_def));
   ASSERT_EQ(2, meta_graph_def.signature_def_size());
 
   ValidateSignatureDef(meta_graph_def, "foo",
@@ -358,7 +377,7 @@ TEST(BundleShimTest, NamedSignatureGenericInputsAndOutputs) {
       .mutable_any_list()
       ->add_value()
       ->PackFrom(signatures);
-  ConvertSignaturesToSignatureDefs(&meta_graph_def);
+  TF_EXPECT_OK(ConvertSignaturesToSignatureDefs(&meta_graph_def));
   EXPECT_EQ(1, meta_graph_def.signature_def_size());
   const auto actual_signature_def =
       meta_graph_def.signature_def().find(kDefaultServingSignatureDefKey);
@@ -397,7 +416,7 @@ TEST(BundleShimTest, NamedSignatureGenericNoInputsOrOutputs) {
       .mutable_any_list()
       ->add_value()
       ->PackFrom(signatures);
-  ConvertSignaturesToSignatureDefs(&meta_graph_def);
+  TF_EXPECT_OK(ConvertSignaturesToSignatureDefs(&meta_graph_def));
   EXPECT_EQ(0, meta_graph_def.signature_def_size());
 }
 
@@ -418,7 +437,7 @@ TEST(BundleShimTest, NamedSignatureGenericOnlyInput) {
       .mutable_any_list()
       ->add_value()
       ->PackFrom(signatures);
-  ConvertSignaturesToSignatureDefs(&meta_graph_def);
+  TF_EXPECT_OK(ConvertSignaturesToSignatureDefs(&meta_graph_def));
   EXPECT_EQ(0, meta_graph_def.signature_def_size());
 }
 
@@ -457,7 +476,7 @@ TEST(BundleShimTest, DefaultAndNamedSignatureWithPredict) {
       .mutable_any_list()
       ->add_value()
       ->PackFrom(signatures);
-  ConvertSignaturesToSignatureDefs(&meta_graph_def);
+  TF_EXPECT_OK(ConvertSignaturesToSignatureDefs(&meta_graph_def));
   EXPECT_EQ(2, meta_graph_def.signature_def_size());
 
   // Verify that the default regression signature is converted to a
@@ -478,17 +497,15 @@ TEST(BundleShimTest, DefaultAndNamedSignatureWithPredict) {
   ASSERT_FALSE(
       actual_signature_def_predict->second.inputs().find("foo-input") ==
       actual_signature_def_predict->second.inputs().end());
-  EXPECT_EQ("foo-input",
-            actual_signature_def_predict->second.inputs()
-                .find("foo-input")
-                ->second.name());
+  EXPECT_EQ("foo-input", actual_signature_def_predict->second.inputs()
+                             .find("foo-input")
+                             ->second.name());
   ASSERT_FALSE(
       actual_signature_def_predict->second.outputs().find("foo-output") ==
       actual_signature_def_predict->second.outputs().end());
-  EXPECT_EQ("foo-output",
-            actual_signature_def_predict->second.outputs()
-                .find("foo-output")
-                ->second.name());
+  EXPECT_EQ("foo-output", actual_signature_def_predict->second.outputs()
+                              .find("foo-output")
+                              ->second.name());
   EXPECT_EQ(kPredictMethodName,
             actual_signature_def_predict->second.method_name());
 }
@@ -499,7 +516,8 @@ TEST(BundleShimTest, BasicExportSessionBundle) {
   const string session_bundle_export_dir =
       test_util::TestSrcDirPath(kSessionBundlePath);
   LoadAndValidateSavedModelBundle(session_bundle_export_dir, tags,
-                                  kDefaultServingSignatureDefKey);
+                                  kDefaultServingSignatureDefKey,
+                                  /*expect_session_bundle=*/true);
 
   // Verify that the named signature is also present.
   SessionOptions session_options;
@@ -522,11 +540,20 @@ TEST(BundleShimTest, BasicExportSessionBundle) {
     found_named_signature = true;
 
     EXPECT_EQ(1, signature_def.inputs_size());
-    EXPECT_FALSE(signature_def.inputs().find("x") ==
-                 signature_def.inputs().end());
+    const auto it_inputs_x = signature_def.inputs().find("x");
+    EXPECT_FALSE(it_inputs_x == signature_def.inputs().end());
+    // Ensure the TensorInfo has name and dtype populated.
+    const TensorInfo& tensor_info_x = it_inputs_x->second;
+    EXPECT_EQ("x:0", tensor_info_x.name());
+    EXPECT_EQ(DT_FLOAT, tensor_info_x.dtype());
+
     EXPECT_EQ(1, signature_def.outputs_size());
-    EXPECT_FALSE(signature_def.outputs().find("y") ==
-                 signature_def.outputs().end());
+    const auto it_outputs_y = signature_def.outputs().find("y");
+    EXPECT_FALSE(it_outputs_y == signature_def.outputs().end());
+    // Ensure the TensorInfo has name and dtype populated.
+    const TensorInfo& tensor_info_y = it_outputs_y->second;
+    EXPECT_EQ("y:0", tensor_info_y.name());
+    EXPECT_EQ(DT_FLOAT, tensor_info_y.dtype());
   }
   EXPECT_TRUE(found_named_signature);
 }
@@ -536,7 +563,8 @@ TEST(BundleShimTest, BasicExportSavedModel) {
   const string saved_model_bundle_export_dir =
       io::JoinPath(testing::TensorFlowSrcRoot(), kSavedModelBundlePath);
   LoadAndValidateSavedModelBundle(saved_model_bundle_export_dir,
-                                  {kSavedModelTagServe}, "regress_x_to_y");
+                                  {kSavedModelTagServe}, "regress_x_to_y",
+                                  /*expect_session_bundle=*/false);
 }
 
 // Checks a basic load fails with an invalid export path.

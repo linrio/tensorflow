@@ -20,9 +20,6 @@ from __future__ import print_function
 
 import numpy as np
 
-from tensorflow.contrib.distributions.python.ops import distribution
-from tensorflow.contrib.distributions.python.ops import distribution_util
-from tensorflow.contrib.framework.python.framework import tensor_util as contrib_tensor_util
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
@@ -33,6 +30,9 @@ from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import nn
 from tensorflow.python.ops import random_ops
+from tensorflow.python.ops.distributions import distribution
+from tensorflow.python.ops.distributions import util as distribution_util
+from tensorflow.python.util import deprecation
 
 
 __all__ = [
@@ -89,12 +89,23 @@ class InverseGamma(distribution.Distribution):
   #### Examples
 
   ```python
-  dist = InverseGamma(concentration=3.0, rate=2.0)
-  dist2 = InverseGamma(concentration=[3.0, 4.0], rate=[2.0, 3.0])
+  import tensorflow_probability as tfp
+  tfd = tfp.distributions
+
+  dist = tfd.InverseGamma(concentration=3.0, rate=2.0)
+  dist2 = tfd.InverseGamma(concentration=[3.0, 4.0], rate=[2.0, 3.0])
   ```
 
   """
 
+  @deprecation.deprecated(
+      "2018-10-01",
+      "The TensorFlow Distributions library has moved to "
+      "TensorFlow Probability "
+      "(https://github.com/tensorflow/probability). You "
+      "should update all references to use `tfp.distributions` "
+      "instead of `tf.contrib.distributions`.",
+      warn_once=True)
   def __init__(self,
                concentration,
                rate,
@@ -111,22 +122,22 @@ class InverseGamma(distribution.Distribution):
         distribution(s). Must contain only positive values.
       rate: Floating point tensor, the inverse scale params of the
         distribution(s). Must contain only positive values.
-      validate_args: Python `Boolean`, default `False`. When `True` distribution
+      validate_args: Python `bool`, default `False`. When `True` distribution
         parameters are checked for validity despite possibly degrading runtime
         performance. When `False` invalid inputs may silently render incorrect
         outputs.
-      allow_nan_stats: Python `Boolean`, default `True`. When `True`, statistics
+      allow_nan_stats: Python `bool`, default `True`. When `True`, statistics
         (e.g., mean, mode, variance) use the value "`NaN`" to indicate the
-        result is undefined.  When `False`, an exception is raised if one or
+        result is undefined. When `False`, an exception is raised if one or
         more of the statistic's batch members are undefined.
-      name: `String` name prefixed to Ops created by this class.
+      name: Python `str` name prefixed to Ops created by this class.
 
 
     Raises:
       TypeError: if `concentration` and `rate` are different dtypes.
     """
-    parameters = locals()
-    with ops.name_scope(name, values=[concentration, rate]) as ns:
+    parameters = dict(locals())
+    with ops.name_scope(name, values=[concentration, rate]) as name:
       with ops.control_dependencies([
           check_ops.assert_positive(concentration),
           check_ops.assert_positive(rate),
@@ -134,18 +145,17 @@ class InverseGamma(distribution.Distribution):
         self._concentration = array_ops.identity(
             concentration, name="concentration")
         self._rate = array_ops.identity(rate, name="rate")
-        contrib_tensor_util.assert_same_float_dtype(
+        check_ops.assert_same_float_dtype(
             [self._concentration, self._rate])
     super(InverseGamma, self).__init__(
         dtype=self._concentration.dtype,
         validate_args=validate_args,
         allow_nan_stats=allow_nan_stats,
-        is_continuous=True,
         reparameterization_type=distribution.NOT_REPARAMETERIZED,
         parameters=parameters,
         graph_parents=[self._concentration,
                        self._rate],
-        name=ns)
+        name=name)
 
   @staticmethod
   def _param_shapes(sample_shape):
@@ -193,12 +203,6 @@ class InverseGamma(distribution.Distribution):
   def _log_prob(self, x):
     return self._log_unnormalized_prob(x) - self._log_normalization()
 
-  def _prob(self, x):
-    return math_ops.exp(self._log_prob(x))
-
-  def _log_cdf(self, x):
-    return math_ops.log(self._cdf(x))
-
   def _cdf(self, x):
     x = self._maybe_assert_valid_sample(x)
     # Note that igammac returns the upper regularized incomplete gamma
@@ -223,7 +227,7 @@ class InverseGamma(distribution.Distribution):
   @distribution_util.AppendDocstring(
       """The mean of an inverse gamma distribution is
       `rate / (concentration - 1)`, when `concentration > 1`, and `NaN`
-      otherwise.  If `self.allow_nan_stats` is `False`, an exception will be
+      otherwise. If `self.allow_nan_stats` is `False`, an exception will be
       raised rather than returning `NaN`""")
   def _mean(self):
     mean = self.rate / (self.concentration - 1.)
@@ -245,9 +249,9 @@ class InverseGamma(distribution.Distribution):
       `self.allow_nan_stats` is `False`, an exception will be raised rather
       than returning `NaN`.""")
   def _variance(self):
-    var = (math_ops.square(self.rate)
-           / math_ops.square(self.concentration - 1.)
-           / (self.concentration - 2.))
+    var = (
+        math_ops.square(self.rate) / math_ops.squared_difference(
+            self.concentration, 1.) / (self.concentration - 2.))
     if self.allow_nan_stats:
       nan = array_ops.fill(
           self.batch_shape_tensor(),
@@ -269,7 +273,7 @@ class InverseGamma(distribution.Distribution):
     return self.rate / (1. + self.concentration)
 
   def _maybe_assert_valid_sample(self, x):
-    contrib_tensor_util.assert_same_float_dtype(
+    check_ops.assert_same_float_dtype(
         tensors=[x], dtype=self.dtype)
     if not self.validate_args:
       return x
@@ -281,19 +285,27 @@ class InverseGamma(distribution.Distribution):
 class InverseGammaWithSoftplusConcentrationRate(InverseGamma):
   """`InverseGamma` with softplus of `concentration` and `rate`."""
 
+  @deprecation.deprecated(
+      "2018-10-01",
+      "The TensorFlow Distributions library has moved to "
+      "TensorFlow Probability "
+      "(https://github.com/tensorflow/probability). You "
+      "should update all references to use `tfp.distributions` "
+      "instead of `tf.contrib.distributions`.",
+      warn_once=True)
   def __init__(self,
                concentration,
                rate,
                validate_args=False,
                allow_nan_stats=True,
                name="InverseGammaWithSoftplusConcentrationRate"):
-    parameters = locals()
-    with ops.name_scope(name, values=[concentration, rate]) as ns:
+    parameters = dict(locals())
+    with ops.name_scope(name, values=[concentration, rate]) as name:
       super(InverseGammaWithSoftplusConcentrationRate, self).__init__(
           concentration=nn.softplus(concentration,
                                     name="softplus_concentration"),
           rate=nn.softplus(rate, name="softplus_rate"),
           validate_args=validate_args,
           allow_nan_stats=allow_nan_stats,
-          name=ns)
+          name=name)
     self._parameters = parameters

@@ -15,8 +15,6 @@
 
 """Utilities for dealing with Tensors.
 
-## Miscellaneous Utility Functions
-
 @@constant_value
 @@make_tensor_proto
 @@make_ndarray

@@ -15,8 +15,8 @@ limitations under the License.
 
 /// SavedModel loading functions and SavedModelBundle struct.
 
-#ifndef THIRD_PARTY_TENSORFLOW_CC_SAVED_MODEL_LOADER_H_
-#define THIRD_PARTY_TENSORFLOW_CC_SAVED_MODEL_LOADER_H_
+#ifndef TENSORFLOW_CC_SAVED_MODEL_LOADER_H_
+#define TENSORFLOW_CC_SAVED_MODEL_LOADER_H_
 
 #include <string>
 #include <unordered_set>
@@ -36,7 +36,7 @@ struct SavedModelBundle {
   /// resource leaks, we explicitly call Close on Sessions that we create.
   ~SavedModelBundle() {
     if (session) {
-      session->Close();
+      session->Close().IgnoreError();
     }
   }
 
@@ -61,4 +61,4 @@ bool MaybeSavedModelDirectory(const string& export_dir);
 
 }  // namespace tensorflow
 
-#endif  // THIRD_PARTY_TENSORFLOW_CC_SAVED_MODEL_LOADER_H_
+#endif  // TENSORFLOW_CC_SAVED_MODEL_LOADER_H_

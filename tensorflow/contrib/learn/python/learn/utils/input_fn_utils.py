@@ -12,8 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
+"""Utilities for creating input_fns (deprecated).
 
-"""Utilities for creating input_fns."""
+This module and all its submodules are deprecated. See
+[contrib/learn/README.md](https://www.tensorflow.org/code/tensorflow/contrib/learn/README.md)
+for migration instructions.
+
+Contents of this file are moved to tensorflow/python/estimator/export.py.
+InputFnOps is renamed to ServingInputReceiver.
+build_parsing_serving_input_fn is renamed to
+  build_parsing_serving_input_receiver_fn.
+build_default_serving_input_fn is renamed to
+  build_raw_serving_input_receiver_fn.
+"""
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -24,23 +36,36 @@ from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import parsing_ops
+from tensorflow.python.util.deprecation import deprecated
 
 
-# A return type allowing input_fns to return multiple values in a well-
-# defined way (analogous to ModelFnOps).
-# The expected return values are:
-#  features: a dict of string to `Tensor` or `SparseTensor`, giving the features
-#            to be passed to the model.
-#  labels: a dict of string to `Tensor` or `SparseTensor`, giving labels (aka
-#            targets) for training.
-#  default_inputs: a dict of string to `Tensor` or `SparseTensor`, giving the
-#            input placeholders (if any) that this input_fn expects to be fed.
-InputFnOps = collections.namedtuple('InputFnOps',
-                                    ['features',
-                                     'labels',
-                                     'default_inputs'])
+class InputFnOps(collections.namedtuple('InputFnOps',
+                                        ['features',
+                                         'labels',
+                                         'default_inputs'])):
+  """A return type for an input_fn (deprecated).
+
+  THIS CLASS IS DEPRECATED. Please use tf.estimator.export.ServingInputReceiver
+  instead.
+
+  This return type is currently only supported for serving input_fn.
+  Training and eval input_fn should return a `(features, labels)` tuple.
+
+  The expected return values are:
+    features: A dict of string to `Tensor` or `SparseTensor`, specifying the
+      features to be passed to the model.
+    labels: A `Tensor`, `SparseTensor`, or a dict of string to `Tensor` or
+      `SparseTensor`, specifying labels for training or eval. For serving, set
+      `labels` to `None`.
+    default_inputs: a dict of string to `Tensor` or `SparseTensor`, specifying
+      the input placeholders (if any) that this input_fn expects to be fed.
+      Typically, this is used by a serving input_fn, which expects to be fed
+      serialized `tf.Example` protos.
+  """
 
 
+@deprecated(None, 'Please use '
+            'tf.estimator.export.build_parsing_serving_input_receiver_fn.')
 def build_parsing_serving_input_fn(feature_spec, default_batch_size=None):
   """Build an input_fn appropriate for serving, expecting fed tf.Examples.
 
@@ -69,6 +94,8 @@ def build_parsing_serving_input_fn(feature_spec, default_batch_size=None):
   return input_fn
 
 
+@deprecated(None, 'Please use '
+            'tf.estimator.export.build_raw_serving_input_receiver_fn.')
 def build_default_serving_input_fn(features, default_batch_size=None):
   """Build an input_fn appropriate for serving, expecting feature Tensors.
 
@@ -92,9 +119,8 @@ def build_default_serving_input_fn(features, default_batch_size=None):
       shape_list[0] = default_batch_size
       shape = tensor_shape.TensorShape(shape_list)
 
-      features_placeholders[name] = array_ops.placeholder(dtype=t.dtype,
-                                                          shape=shape,
-                                                          name=t.name)
+      features_placeholders[name] = array_ops.placeholder(
+          dtype=t.dtype, shape=shape, name=t.op.name)
     labels = None  # these are not known in serving!
     return InputFnOps(features_placeholders, labels, features_placeholders)
   return input_fn

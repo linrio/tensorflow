@@ -5,10 +5,25 @@ licenses(["notice"])  # Apache 2.0
 
 exports_files(["LICENSE"])
 
+load("//tensorflow:tensorflow.bzl", "py_test")
+
 package(
     default_visibility = [
         "//tensorflow:__subpackages__",
         "//tensorflow_models:__subpackages__",
+    ],
+)
+
+# Transitive dependencies of this target will be included in the pip package.
+py_library(
+    name = "nets_pip",
+    deps = [
+        ":alexnet",
+        ":inception",
+        ":overfeat",
+        ":resnet_v1",
+        ":resnet_v2",
+        ":vgg",
     ],
 )
 
@@ -100,9 +115,9 @@ py_library(
 
 py_test(
     name = "inception_v1_test",
-    size = "large",
+    size = "medium",
     srcs = ["inception_v1_test.py"],
-    shard_count = 3,
+    shard_count = 8,
     srcs_version = "PY2AND3",
     deps = [
         ":inception_v1",
@@ -120,9 +135,9 @@ py_test(
 
 py_test(
     name = "inception_v2_test",
-    size = "large",
+    size = "medium",
     srcs = ["inception_v2_test.py"],
-    shard_count = 3,
+    shard_count = 8,
     srcs_version = "PY2AND3",
     deps = [
         ":inception_v2",
@@ -140,9 +155,9 @@ py_test(
 
 py_test(
     name = "inception_v3_test",
-    size = "large",
+    size = "medium",
     srcs = ["inception_v3_test.py"],
-    shard_count = 3,
+    shard_count = 8,
     srcs_version = "PY2AND3",
     deps = [
         ":inception_v3",
@@ -218,8 +233,9 @@ py_library(
 
 py_test(
     name = "resnet_v1_test",
-    size = "large",
+    size = "medium",
     srcs = ["resnet_v1_test.py"],
+    shard_count = 4,
     srcs_version = "PY2AND3",
     deps = [
         ":resnet_utils",
@@ -228,9 +244,9 @@ py_test(
         "//tensorflow/contrib/layers:layers_py",
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
-        "//tensorflow/python:framework",
         "//tensorflow/python:framework_for_generated_wrappers",
         "//tensorflow/python:math_ops",
+        "//tensorflow/python:random_seed",
         "//tensorflow/python:variable_scope",
         "//tensorflow/python:variables",
         "//third_party/py/numpy",
@@ -253,18 +269,20 @@ py_library(
 
 py_test(
     name = "resnet_v2_test",
-    size = "large",
+    size = "medium",
     srcs = ["resnet_v2_test.py"],
+    shard_count = 4,
     srcs_version = "PY2AND3",
     deps = [
+        ":resnet_utils",
         ":resnet_v2",
         "//tensorflow/contrib/framework:framework_py",
         "//tensorflow/contrib/layers:layers_py",
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
-        "//tensorflow/python:framework",
         "//tensorflow/python:framework_for_generated_wrappers",
         "//tensorflow/python:math_ops",
+        "//tensorflow/python:random_seed",
         "//tensorflow/python:variable_scope",
         "//tensorflow/python:variables",
         "//third_party/py/numpy",
@@ -300,16 +318,4 @@ py_test(
         "//tensorflow/python:variable_scope",
         "//tensorflow/python:variables",
     ],
-)
-
-filegroup(
-    name = "all_files",
-    srcs = glob(
-        ["**/*"],
-        exclude = [
-            "**/METADATA",
-            "**/OWNERS",
-        ],
-    ),
-    visibility = ["//tensorflow:__subpackages__"],
 )

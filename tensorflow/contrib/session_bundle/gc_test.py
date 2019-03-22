@@ -29,10 +29,6 @@ from tensorflow.python.platform import gfile
 from tensorflow.python.platform import test
 
 
-def tearDownModule():
-  gfile.DeleteRecursively(test.get_temp_dir())
-
-
 class GcTest(test_util.TensorFlowTestCase):
 
   def testLargestExportVersions(self):
@@ -108,7 +104,7 @@ class GcTest(test_util.TensorFlowTestCase):
 
     # create a simple parser that pulls the export_version from the directory.
     def parser(path):
-      match = re.match("^" + base_dir + "/(\\d+)$", path.path)
+      match = re.match(r"^" + base_dir + r"/(\d+)$", path.path)
       if not match:
         return None
       return path._replace(export_version=int(match.group(1)))

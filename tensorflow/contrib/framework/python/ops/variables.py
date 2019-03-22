@@ -19,25 +19,27 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import functools
 import re
 
 from tensorflow.contrib.framework.python.ops import add_arg_scope as contrib_add_arg_scope
 from tensorflow.contrib.framework.python.ops import gen_variable_ops
 from tensorflow.contrib.util import loader
+from tensorflow.core.protobuf import saver_pb2
 from tensorflow.python import pywrap_tensorflow
 from tensorflow.python.framework import device as tf_device
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import control_flow_ops
-from tensorflow.python.ops import init_ops
+from tensorflow.python.ops import resource_variable_ops
 from tensorflow.python.ops import variable_scope
 from tensorflow.python.ops import variables
-from tensorflow.python.ops import gen_state_ops
-from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.platform import resource_loader
+from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.training import saver as tf_saver
 from tensorflow.python.training import training_util
+from tensorflow.python.util.deprecation import deprecated
 
 
 __all__ = ['add_model_variable',
@@ -53,11 +55,14 @@ __all__ = ['add_model_variable',
            'get_or_create_global_step',
            'get_local_variables',
            'get_model_variables',
+           'get_trainable_variables',
            'get_unique_variable',
            'get_variables_by_name',
            'get_variables_by_suffix',
+           'get_variable_full_name',
            'get_variables_to_restore',
            'get_variables',
+           'global_variable',
            'local_variable',
            'model_variable',
            'variable',
@@ -79,9 +84,14 @@ def zero_initializer(ref, use_locking=True, name="zero_initializer"):
   """
   loader.load_op_library(
       resource_loader.get_path_to_datafile("_variable_ops.so"))
-  return gen_variable_ops.zero_initializer(ref, name=name)
+  if resource_variable_ops.is_resource_variable(ref):
+    return gen_variable_ops.zero_var_initializer(
+        ref.handle, shape=ref.shape, dtype=ref.dtype, name=name)
+  else:
+    return gen_variable_ops.zero_initializer(ref, name=name)
 
 
+@deprecated(None, "Please switch to tf.train.assert_global_step")
 def assert_global_step(global_step_tensor):
   training_util.assert_global_step(global_step_tensor)
 
@@ -109,77 +119,101 @@ def assert_or_get_global_step(graph=None, global_step_tensor=None):
     assert_global_step(global_step_tensor)
   return global_step_tensor
 
-
+@deprecated(None, "Please switch to tf.train.get_global_step")
 def get_global_step(graph=None):
   return training_util.get_global_step(graph)
 
-
+@deprecated(None, "Please switch to tf.train.create_global_step")
 def create_global_step(graph=None):
   """Create global step tensor in graph.
 
+  This API is deprecated. Use core framework training version instead.
+
   Args:
-    graph: The graph in which to create the global step. If missing, use default
-        graph.
+    graph: The graph in which to create the global step tensor. If missing,
+      use default graph.
 
   Returns:
     Global step tensor.
 
   Raises:
-    ValueError: if global step key is already defined.
+    ValueError: if global step tensor is already defined.
   """
-  graph = ops.get_default_graph() if graph is None else graph
-  if get_global_step(graph) is not None:
-    raise ValueError('"global_step" already exists.')
-  # Create in proper graph and base name_scope.
-  with graph.as_default() as g, g.name_scope(None):
-    collections = [ops.GraphKeys.GLOBAL_VARIABLES, ops.GraphKeys.GLOBAL_STEP]
-    return variable(
-        ops.GraphKeys.GLOBAL_STEP,
-        shape=[],
-        dtype=dtypes.int64,
-        initializer=init_ops.zeros_initializer(),
-        trainable=False,
-        collections=collections)
+  return training_util.create_global_step(graph)
 
-
+@deprecated(None, "Please switch to tf.train.get_or_create_global_step")
 def get_or_create_global_step(graph=None):
-  """Returns and create (if necessary) the global step variable.
+  """Returns and create (if necessary) the global step tensor.
 
   Args:
-    graph: The graph in which to create the global step. If missing, use default
-        graph.
+    graph: The graph in which to create the global step tensor. If missing, use
+      default graph.
 
   Returns:
-    the tensor representing the global step variable.
+    The global step tensor.
   """
-  graph = ops.get_default_graph() if graph is None else graph
-  globalstep = get_global_step(graph)
-  if globalstep is None:
-    globalstep = create_global_step(graph)
-  return globalstep
+  return training_util.get_or_create_global_step(graph)
 
 
-def local_variable(initial_value, validate_shape=True, name=None):
-  """Create variable and add it to `GraphKeys.LOCAL_VARIABLES` collection.
+def local_variable(initial_value,
+                   validate_shape=True,
+                   name=None,
+                   use_resource=None):
+  """Create a variable with a value and add it to `GraphKeys.LOCAL_VARIABLES`.
 
   Args:
     initial_value: See variables.Variable.__init__.
     validate_shape: See variables.Variable.__init__.
     name: See variables.Variable.__init__.
+    use_resource: If `True` use a ResourceVariable instead of a Variable.
   Returns:
     New variable.
   """
-  return variables.Variable(
+  return variable_scope.variable(
       initial_value, trainable=False,
       collections=[ops.GraphKeys.LOCAL_VARIABLES],
-      validate_shape=validate_shape, name=name)
+      validate_shape=validate_shape,
+      use_resource=use_resource,
+      name=name)
+
+
+def global_variable(initial_value,
+                    validate_shape=True,
+                    name=None,
+                    use_resource=None):
+  """Create a variable with a value and add it to `GraphKeys.GLOBAL_VARIABLES`.
+
+  Args:
+    initial_value: See variables.Variable.__init__.
+    validate_shape: See variables.Variable.__init__.
+    name: See variables.Variable.__init__.
+    use_resource: If `True` use a ResourceVariable instead of a Variable.
+  Returns:
+    New variable.
+  """
+  return variable_scope.variable(
+      initial_value, trainable=False,
+      collections=[ops.GraphKeys.GLOBAL_VARIABLES],
+      validate_shape=validate_shape,
+      use_resource=use_resource,
+      name=name)
 
 
 @contrib_add_arg_scope
-def variable(name, shape=None, dtype=None, initializer=None,
-             regularizer=None, trainable=True, collections=None,
-             caching_device=None, device=None,
-             partitioner=None, custom_getter=None):
+def variable(name,
+             shape=None,
+             dtype=None,
+             initializer=None,
+             regularizer=None,
+             trainable=True,
+             collections=None,
+             caching_device=None,
+             device=None,
+             partitioner=None,
+             custom_getter=None,
+             use_resource=None,
+             synchronization=variables.VariableSynchronization.AUTO,
+             aggregation=variables.VariableAggregation.NONE):
   """Gets an existing variable with these parameters or creates a new one.
 
   Args:
@@ -204,32 +238,60 @@ def variable(name, shape=None, dtype=None, initializer=None,
       partitions for each axis (currently only one axis can be partitioned).
     custom_getter: Callable that allows overwriting the internal
       get_variable method and has to have the same signature.
+    use_resource: If `True` use a ResourceVariable instead of a Variable.
+    synchronization: Indicates when a distributed a variable will be
+      aggregated. Accepted values are constants defined in the class
+      `tf.VariableSynchronization`. By default the synchronization is set to
+      `AUTO` and the current `DistributionStrategy` chooses
+      when to synchronize. If `synchronization` is set to `ON_READ`,
+      `trainable` must not be set to `True`.
+    aggregation: Indicates how a distributed variable will be aggregated.
+      Accepted values are constants defined in the class
+      `tf.VariableAggregation`.
 
   Returns:
     The created or existing variable.
   """
-  collections = list(collections or [ops.GraphKeys.GLOBAL_VARIABLES])
+  collections = list(collections if collections is not None
+                     else [ops.GraphKeys.GLOBAL_VARIABLES])
 
   # Remove duplicates
-  collections = set(collections)
+  collections = list(set(collections))
   getter = variable_scope.get_variable
   if custom_getter is not None:
-    getter = custom_getter
+    getter = functools.partial(custom_getter,
+                               reuse=variable_scope.get_variable_scope().reuse)
   with ops.device(device or ''):
-    return getter(name, shape=shape, dtype=dtype,
-                  initializer=initializer,
-                  regularizer=regularizer,
-                  trainable=trainable,
-                  collections=collections,
-                  caching_device=caching_device,
-                  partitioner=partitioner)
+    return getter(
+        name,
+        shape=shape,
+        dtype=dtype,
+        initializer=initializer,
+        regularizer=regularizer,
+        trainable=trainable,
+        collections=collections,
+        caching_device=caching_device,
+        partitioner=partitioner,
+        use_resource=use_resource,
+        synchronization=synchronization,
+        aggregation=aggregation)
 
 
 @contrib_add_arg_scope
-def model_variable(name, shape=None, dtype=dtypes.float32, initializer=None,
-                   regularizer=None, trainable=True, collections=None,
-                   caching_device=None, device=None, partitioner=None,
-                   custom_getter=None):
+def model_variable(name,
+                   shape=None,
+                   dtype=dtypes.float32,
+                   initializer=None,
+                   regularizer=None,
+                   trainable=True,
+                   collections=None,
+                   caching_device=None,
+                   device=None,
+                   partitioner=None,
+                   custom_getter=None,
+                   use_resource=None,
+                   synchronization=variables.VariableSynchronization.AUTO,
+                   aggregation=variables.VariableAggregation.NONE):
   """Gets an existing model variable with these parameters or creates a new one.
 
   Args:
@@ -255,17 +317,37 @@ def model_variable(name, shape=None, dtype=dtypes.float32, initializer=None,
       partitions for each axis (currently only one axis can be partitioned).
     custom_getter: Callable that allows overwriting the internal
       get_variable method and has to have the same signature.
+    use_resource: If `True` use a ResourceVariable instead of a Variable.
+    synchronization: Indicates when a distributed a variable will be
+      aggregated. Accepted values are constants defined in the class
+      `tf.VariableSynchronization`. By default the synchronization is set to
+      `AUTO` and the current `DistributionStrategy` chooses
+      when to synchronize. If `synchronization` is set to `ON_READ`,
+      `trainable` must not be set to `True`.
+    aggregation: Indicates how a distributed variable will be aggregated.
+      Accepted values are constants defined in the class
+      `tf.VariableAggregation`.
 
   Returns:
     The created or existing variable.
   """
   collections = list(collections or [])
   collections += [ops.GraphKeys.GLOBAL_VARIABLES, ops.GraphKeys.MODEL_VARIABLES]
-  var = variable(name, shape=shape, dtype=dtype,
-                 initializer=initializer, regularizer=regularizer,
-                 trainable=trainable, collections=collections,
-                 caching_device=caching_device, device=device,
-                 partitioner=partitioner, custom_getter=custom_getter)
+  var = variable(
+      name,
+      shape=shape,
+      dtype=dtype,
+      initializer=initializer,
+      regularizer=regularizer,
+      trainable=trainable,
+      collections=collections,
+      caching_device=caching_device,
+      device=device,
+      partitioner=partitioner,
+      custom_getter=custom_getter,
+      use_resource=use_resource,
+      synchronization=synchronization,
+      aggregation=aggregation)
   return var
 
 
@@ -326,6 +408,19 @@ def get_local_variables(scope=None, suffix=None):
     a list of variables in collection with scope and suffix.
   """
   return get_variables(scope, suffix, ops.GraphKeys.LOCAL_VARIABLES)
+
+
+def get_trainable_variables(scope=None, suffix=None):
+  """Gets the list of trainable variables, filtered by scope and/or suffix.
+
+  Args:
+    scope: an optional scope for filtering the variables to return.
+    suffix: an optional suffix for filtering the variables to return.
+
+  Returns:
+    a list of variables in the trainable collection with scope and suffix.
+  """
+  return get_variables(scope, suffix, ops.GraphKeys.TRAINABLE_VARIABLES)
 
 
 def get_variables_to_restore(include=None, exclude=None):
@@ -405,12 +500,12 @@ def get_unique_variable(var_op_name):
   """
   candidates = get_variables(scope=var_op_name)
   if not candidates:
-    raise ValueError('Couldnt find variable %s' % var_op_name)
+    raise ValueError('Couldn\'t find variable %s' % var_op_name)
 
   for candidate in candidates:
     if candidate.op.name == var_op_name:
       return candidate
-  raise ValueError('Variable %s does not uniquely identify a variable',
+  raise ValueError('Variable %s does not uniquely identify a variable' %
                    var_op_name)
 
 
@@ -438,7 +533,7 @@ def assign_from_values(var_names_to_values):
     var_value = var_names_to_values[var_name]
     var = ops.get_collection(ops.GraphKeys.GLOBAL_VARIABLES, var_name)
     if not var:
-      raise ValueError('Variable %s wasnt found', var_name)
+      raise ValueError('Variable %s wasn\'t found' % var_name)
     elif len(var) > 1:
       # tf.get_collection is just a filter on the prefix: find the exact match:
       found = False
@@ -449,7 +544,7 @@ def assign_from_values(var_names_to_values):
           break
 
       if not found:
-        raise ValueError('Variable %s doesnt uniquely identify a variable',
+        raise ValueError('Variable %s doesn\'t uniquely identify a variable' %
                          var_name)
     else:
       var = var[0]
@@ -494,9 +589,32 @@ def assign_from_values_fn(var_names_to_values):
 # pylint: disable=protected-access
 # Currently variable_scope doesn't provide very good APIs to access
 # all variables under scope and retrieve and check existing scopes.
-#
+def get_variable_full_name(var):
+  """Returns the full name of a variable.
+
+  For normal Variables, this is the same as the var.op.name.  For
+  sliced or PartitionedVariables, this name is the same for all the
+  slices/partitions. In both cases, this is normally the name used in
+  a checkpoint file.
+
+  Args:
+    var: A `Variable` object.
+
+  Returns:
+    A string that is the full name.
+  """
+  if var._save_slice_info:
+    return var._save_slice_info.full_name
+  else:
+    return var.op.name
+
+
 # TODO(nsilberman): add flag to load exponential moving averages instead
-def assign_from_checkpoint(model_path, var_list):
+#
+# TODO(sguada): Update docs in slim/g3doc/index.md to describe
+# the new feature where the var_list dictionary can have values that
+# are each a list of Variables.
+def assign_from_checkpoint(model_path, var_list, ignore_missing_vars=False):
   """Creates an operation to assign specific variables from a checkpoint.
 
   Args:
@@ -509,13 +627,15 @@ def assign_from_checkpoint(model_path, var_list):
         name in the checkpoint must be the full variable, not the
         name of the partitioned variable, eg. "my_var" rather than
         "my_var/part_4". If empty, returns no_op(), {}.
+    ignore_missing_vars: Boolean, if True ignore variables missing in the
+        checkpoint with a warning instead of failing.
 
   Returns:
     the restore_op and the feed_dict that need to be run to restore var_list.
 
   Raises:
-    ValueError: If the checkpoint specified at `model_path` is missing one of
-      the variables in `var_list`.
+    ValueError: If `ignore_missing_vars` is False and the checkpoint specified
+        at `model_path` is missing one of the variables in `var_list`.
   """
   # Normalize var_list into a dictionary mapping names in the
   # checkpoint to the list of variables to initialize from that
@@ -524,16 +644,13 @@ def assign_from_checkpoint(model_path, var_list):
   grouped_vars = {}
   if isinstance(var_list, (tuple, list)):
     for var in var_list:
-      if var._save_slice_info:
-        ckpt_name = var._save_slice_info.full_name
-      else:
-        ckpt_name = var.op.name
+      ckpt_name = get_variable_full_name(var)
       if ckpt_name not in grouped_vars:
         grouped_vars[ckpt_name] = []
       grouped_vars[ckpt_name].append(var)
 
   else:
-    for ckpt_name, value in var_list.iteritems():
+    for ckpt_name, value in var_list.items():
       if isinstance(value, (tuple, list)):
         grouped_vars[ckpt_name] = value
       else:
@@ -546,15 +663,19 @@ def assign_from_checkpoint(model_path, var_list):
   assign_ops = []
   for ckpt_name in grouped_vars:
     if not reader.has_tensor(ckpt_name):
-      raise ValueError(
-          'Checkpoint is missing variable [%s]' % ckpt_name)
+      log_str = 'Checkpoint is missing variable [%s]' % ckpt_name
+      if ignore_missing_vars:
+        logging.warning(log_str)
+        continue
+      else:
+        raise ValueError(log_str)
     ckpt_value = reader.get_tensor(ckpt_name)
 
     for var in grouped_vars[ckpt_name]:
       placeholder_tensor = array_ops.placeholder(
           dtype=var.dtype.base_dtype,
           shape=var.get_shape(),
-          name='placeholder/' + ckpt_name)
+          name='placeholder/' + var.op.name)
       assign_ops.append(var.assign(placeholder_tensor))
 
       if not var._save_slice_info:
@@ -571,6 +692,7 @@ def assign_from_checkpoint(model_path, var_list):
         slice_dims = [(start, start + size) for (start, size) in slice_dims]
         slice_dims = [slice(*x) for x in slice_dims]
         slice_value = ckpt_value[slice_dims]
+        slice_value = slice_value.reshape(var._save_slice_info.var_shape)
         feed_dict[placeholder_tensor] = slice_value
 
   assign_op = control_flow_ops.group(*assign_ops)
@@ -582,12 +704,15 @@ def assign_from_checkpoint_fn(model_path, var_list, ignore_missing_vars=False,
                               reshape_variables=False):
   """Returns a function that assigns specific variables from a checkpoint.
 
+  If ignore_missing_vars is True and no variables are found in the checkpoint
+  it returns None.
+
   Args:
     model_path: The full path to the model checkpoint. To get latest checkpoint
         use `model_path = tf.train.latest_checkpoint(checkpoint_dir)`
     var_list: A list of `Variable` objects or a dictionary mapping names in the
-        checkpoint to the correspoing variables to initialize. If empty or None,
-        it would return  no_op(), None.
+        checkpoint to the corresponding variables to initialize. If empty or
+        `None`, it would return `no_op(), None`.
     ignore_missing_vars: Boolean, if True it would ignore variables missing in
         the checkpoint with a warning instead of failing.
     reshape_variables: Boolean, if True it would automatically reshape variables
@@ -596,12 +721,14 @@ def assign_from_checkpoint_fn(model_path, var_list, ignore_missing_vars=False,
 
   Returns:
     A function that takes a single argument, a `tf.Session`, that applies the
-    assignment operation.
+    assignment operation. If no matching variables were found in the checkpoint
+    then `None` is returned.
 
   Raises:
-    ValueError: If the checkpoint specified at `model_path` is missing one of
-      the variables in `var_list`.
+    ValueError: If var_list is empty.
   """
+  if not var_list:
+    raise ValueError('var_list cannot be empty')
   if ignore_missing_vars:
     reader = pywrap_tensorflow.NewCheckpointReader(model_path)
     if isinstance(var_list, dict):
@@ -616,10 +743,15 @@ def assign_from_checkpoint_fn(model_path, var_list, ignore_missing_vars=False,
         logging.warning(
             'Variable %s missing in checkpoint %s', var, model_path)
     var_list = available_vars
-  saver = tf_saver.Saver(var_list, reshape=reshape_variables)
-  def callback(session):
-    saver.restore(session, model_path)
-  return callback
+  if var_list:
+    saver = tf_saver.Saver(var_list, reshape=reshape_variables,
+                           write_version=saver_pb2.SaverDef.V1)
+    def callback(session):
+      saver.restore(session, model_path)
+    return callback
+  else:
+    logging.warning('No Variables to restore')
+    return None
 
 
 class VariableDeviceChooser(object):
@@ -633,7 +765,8 @@ class VariableDeviceChooser(object):
                num_tasks=0,
                job_name='ps',
                device_type='CPU',
-               device_index=0):
+               device_index=0,
+               replica=None):
     """Initialize VariableDeviceChooser.
 
     Usage:
@@ -654,12 +787,15 @@ class VariableDeviceChooser(object):
     self._job_name = job_name
     self._device_type = device_type
     self._device_index = device_index
+    self._replica = replica
     self._num_tasks = num_tasks
     self._next_task_id = 0
 
   def __call__(self, op):
-    device_spec = tf_device.DeviceSpec(device_type=self._device_type,
-                                       device_index=self._device_index)
+    device_spec = tf_device.DeviceSpec(
+        replica=self._replica,
+        device_type=self._device_type,
+        device_index=self._device_index)
     if self._num_tasks > 0:
       task_id = self._next_task_id
       self._next_task_id = (self._next_task_id + 1) % self._num_tasks

@@ -18,18 +18,23 @@ from __future__ import division
 from __future__ import print_function
 
 import copy
+import os
 import re
 import sre_constants
 import traceback
 
+import numpy as np
+import six
 from six.moves import xrange  # pylint: disable=redefined-builtin
 
+from tensorflow.python import pywrap_tensorflow_internal
 from tensorflow.python.platform import gfile
 
 HELP_INDENT = "  "
 
 EXPLICIT_USER_EXIT = "explicit_user_exit"
 REGEX_MATCH_LINES_KEY = "regex_match_lines"
+INIT_SCROLL_POS_KEY = "init_scroll_pos"
 
 MAIN_MENU_KEY = "mm:"
 
@@ -43,6 +48,108 @@ class CommandLineExit(Exception):
   @property
   def exit_token(self):
     return self._exit_token
+
+
+class RichLine(object):
+  """Rich single-line text.
+
+  Attributes:
+    text: A plain string, the raw text represented by this object.  Should not
+      contain newlines.
+    font_attr_segs: A list of (start, end, font attribute) triples, representing
+      richness information applied to substrings of text.
+  """
+
+  def __init__(self, text="", font_attr=None):
+    """Construct a RichLine with no rich attributes or a single attribute.
+
+    Args:
+      text: Raw text string
+      font_attr: If specified, a single font attribute to be applied to the
+        entire text.  Extending this object via concatenation allows creation
+        of text with varying attributes.
+    """
+    # TODO(ebreck) Make .text and .font_attr protected members when we no
+    # longer need public access.
+    self.text = text
+    if font_attr:
+      self.font_attr_segs = [(0, len(text), font_attr)]
+    else:
+      self.font_attr_segs = []
+
+  def __add__(self, other):
+    """Concatenate two chunks of maybe rich text to make a longer rich line.
+
+    Does not modify self.
+
+    Args:
+      other: Another piece of text to concatenate with this one.
+        If it is a plain str, it will be appended to this string with no
+        attributes.  If it is a RichLine, it will be appended to this string
+        with its attributes preserved.
+
+    Returns:
+      A new RichLine comprising both chunks of text, with appropriate
+        attributes applied to the corresponding substrings.
+    """
+    ret = RichLine()
+    if isinstance(other, six.string_types):
+      ret.text = self.text + other
+      ret.font_attr_segs = self.font_attr_segs[:]
+      return ret
+    elif isinstance(other, RichLine):
+      ret.text = self.text + other.text
+      ret.font_attr_segs = self.font_attr_segs[:]
+      old_len = len(self.text)
+      for start, end, font_attr in other.font_attr_segs:
+        ret.font_attr_segs.append((old_len + start, old_len + end, font_attr))
+      return ret
+    else:
+      raise TypeError("%r cannot be concatenated with a RichLine" % other)
+
+  def __len__(self):
+    return len(self.text)
+
+
+def rich_text_lines_from_rich_line_list(rich_text_list, annotations=None):
+  """Convert a list of RichLine objects or strings to a RichTextLines object.
+
+  Args:
+    rich_text_list: a list of RichLine objects or strings
+    annotations: annotatoins for the resultant RichTextLines object.
+
+  Returns:
+    A corresponding RichTextLines object.
+  """
+  lines = []
+  font_attr_segs = {}
+  for i, rl in enumerate(rich_text_list):
+    if isinstance(rl, RichLine):
+      lines.append(rl.text)
+      if rl.font_attr_segs:
+        font_attr_segs[i] = rl.font_attr_segs
+    else:
+      lines.append(rl)
+  return RichTextLines(lines, font_attr_segs, annotations=annotations)
+
+
+def get_tensorflow_version_lines(include_dependency_versions=False):
+  """Generate RichTextLines with TensorFlow version info.
+
+  Args:
+    include_dependency_versions: Include the version of TensorFlow's key
+      dependencies, such as numpy.
+
+  Returns:
+    A formatted, multi-line `RichTextLines` object.
+  """
+  lines = ["TensorFlow version: %s" % pywrap_tensorflow_internal.__version__]
+  lines.append("")
+  if include_dependency_versions:
+    lines.append("Dependency version(s):")
+    lines.append("  numpy: %s" % np.__version__)
+    lines.append("")
+  return RichTextLines(lines)
 
 
 class RichTextLines(object):
@@ -91,7 +198,7 @@ class RichTextLines(object):
     """
     if isinstance(lines, list):
       self._lines = lines
-    elif isinstance(lines, str):
+    elif isinstance(lines, six.string_types):
       self._lines = [lines]
     else:
       raise ValueError("Unexpected type in lines: %s" % type(lines))
@@ -237,6 +344,9 @@ class RichTextLines(object):
     self._lines.append(line)
     if font_attr_segs:
       self._font_attr_segs[len(self._lines) - 1] = font_attr_segs
+
+  def append_rich_line(self, rich_line):
+    self.append(rich_line.text, rich_line.font_attr_segs)
 
   def prepend(self, line, font_attr_segs=None):
     """Prepend (i.e., add to the front) a single line of text.
@@ -449,6 +559,8 @@ class CommandHandlerRegistry(object):
 
   HELP_COMMAND = "help"
   HELP_COMMAND_ALIASES = ["h"]
+  VERSION_COMMAND = "version"
+  VERSION_COMMAND_ALIASES = ["ver"]
 
   def __init__(self):
     # A dictionary from command prefix to handler.
@@ -472,6 +584,13 @@ class CommandHandlerRegistry(object):
         self._help_handler,
         "Print this help message.",
         prefix_aliases=self.HELP_COMMAND_ALIASES)
+
+    # Register a default handler for the command "version".
+    self.register_command_handler(
+        self.VERSION_COMMAND,
+        self._version_handler,
+        "Print the versions of TensorFlow and its key dependencies.",
+        prefix_aliases=self.VERSION_COMMAND_ALIASES)
 
   def register_command_handler(self,
                                prefix,
@@ -519,7 +638,7 @@ class CommandHandlerRegistry(object):
       raise ValueError("handler is not callable")
 
     # Make sure that help info is a string.
-    if not isinstance(help_info, str):
+    if not isinstance(help_info, six.string_types):
       raise ValueError("help_info is not a str")
 
     # Process prefix aliases.
@@ -561,7 +680,7 @@ class CommandHandlerRegistry(object):
         3) the handler is found for the prefix, but it fails to return a
           RichTextLines or raise any exception.
       CommandLineExit:
-        If the command handler raises this type of exception, tihs method will
+        If the command handler raises this type of exception, this method will
         simply pass it along.
     """
     if not prefix:
@@ -674,6 +793,11 @@ class CommandHandlerRegistry(object):
     else:
       return RichTextLines(["ERROR: help takes only 0 or 1 input argument."])
 
+  def _version_handler(self, args, screen_info=None):
+    del args  # Unused currently.
+    del screen_info  # Unused currently.
+    return get_tensorflow_version_lines(include_dependency_versions=True)
+
   def _resolve_prefix(self, token):
     """Resolve command prefix from the prefix itself or its alias.
 
@@ -751,7 +875,7 @@ class TabCompletionRegistry(object):
 
     Args:
       context_words: A list of context words belonging to the context being
-        registerd. It is a list of str, instead of a single string, to support
+        registered. It is a list of str, instead of a single string, to support
         synonym words triggering the same tab-completion context, e.g.,
         both "drink" and the short-hand "dr" can trigger the same context.
       comp_items: A list of completion items, as a list of str.
@@ -884,16 +1008,51 @@ class TabCompletionRegistry(object):
 class CommandHistory(object):
   """Keeps command history and supports lookup."""
 
-  def __init__(self, limit=100):
+  _HISTORY_FILE_NAME = ".tfdbg_history"
+
+  def __init__(self, limit=100, history_file_path=None):
     """CommandHistory constructor.
 
     Args:
       limit: Maximum number of the most recent commands that this instance
         keeps track of, as an int.
+      history_file_path: (str) Manually specified path to history file. Used in
+        testing.
     """
 
     self._commands = []
     self._limit = limit
+    self._history_file_path = (
+        history_file_path or self._get_default_history_file_path())
+    self._load_history_from_file()
+
+  def _load_history_from_file(self):
+    if os.path.isfile(self._history_file_path):
+      try:
+        with open(self._history_file_path, "rt") as history_file:
+          commands = history_file.readlines()
+        self._commands = [command.strip() for command in commands
+                          if command.strip()]
+
+        # Limit the size of the history file.
+        if len(self._commands) > self._limit:
+          self._commands = self._commands[-self._limit:]
+          with open(self._history_file_path, "wt") as history_file:
+            for command in self._commands:
+              history_file.write(command + "\n")
+      except IOError:
+        print("WARNING: writing history file failed.")
+
+  def _add_command_to_history_file(self, command):
+    try:
+      with open(self._history_file_path, "at") as history_file:
+        history_file.write(command + "\n")
+    except IOError:
+      pass
+
+  @classmethod
+  def _get_default_history_file_path(cls):
+    return os.path.join(os.path.expanduser("~"), cls._HISTORY_FILE_NAME)
 
   def add_command(self, command):
     """Add a command to the command history.
@@ -905,13 +1064,19 @@ class CommandHistory(object):
       TypeError: if command is not a str.
     """
 
-    if not isinstance(command, str):
+    if self._commands and command == self._commands[-1]:
+      # Ignore repeating commands in a row.
+      return
+
+    if not isinstance(command, six.string_types):
       raise TypeError("Attempt to enter non-str entry to command history")
 
     self._commands.append(command)
 
     if len(self._commands) > self._limit:
       self._commands = self._commands[-self._limit:]
+
+    self._add_command_to_history_file(command)
 
   def most_recent_n(self, n):
     """Look up the n most recent commands.

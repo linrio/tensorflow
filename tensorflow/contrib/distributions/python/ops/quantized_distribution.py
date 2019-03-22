@@ -20,26 +20,35 @@ from __future__ import print_function
 
 import numpy as np
 
-from tensorflow.contrib.distributions.python.ops import distribution as distributions
-from tensorflow.contrib.distributions.python.ops import distribution_util
-from tensorflow.contrib.framework.python.framework import tensor_util as contrib_tensor_util
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import check_ops
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import math_ops
+from tensorflow.python.ops.distributions import distribution as distributions
+from tensorflow.python.ops.distributions import util as distribution_util
+from tensorflow.python.util import deprecation
 
 __all__ = ["QuantizedDistribution"]
 
 
+@deprecation.deprecated(
+    "2018-10-01",
+    "The TensorFlow Distributions library has moved to "
+    "TensorFlow Probability "
+    "(https://github.com/tensorflow/probability). You "
+    "should update all references to use `tfp.distributions` "
+    "instead of `tf.contrib.distributions`.",
+    warn_once=True)
 def _logsum_expbig_minus_expsmall(big, small):
   """Stable evaluation of `Log[exp{big} - exp{small}]`.
 
   To work correctly, we should have the pointwise relation:  `small <= big`.
 
   Args:
-    big: Numeric `Tensor`
-    small: Numeric `Tensor` with same `dtype` as `big` and broadcastable shape.
+    big: Floating-point `Tensor`
+    small: Floating-point `Tensor` with same `dtype` as `big` and broadcastable
+      shape.
 
   Returns:
     `Tensor` of same `dtype` of `big` and broadcast shape.
@@ -61,14 +70,14 @@ P[Y = y] := P[X <= low],  if y == low,
 """
 
 _prob_note = _prob_base_note + """
-The base distribution's `cdf` method must be defined on `y - 1`.  If the
+The base distribution's `cdf` method must be defined on `y - 1`. If the
 base distribution has a `survival_function` method, results will be more
 accurate for large values of `y`, and in this case the `survival_function` must
 also be defined on `y - 1`.
 """
 
 _log_prob_note = _prob_base_note + """
-The base distribution's `log_cdf` method must be defined on `y - 1`.  If the
+The base distribution's `log_cdf` method must be defined on `y - 1`. If the
 base distribution has a `log_survival_function` method results will be more
 accurate for large values of `y`, and in this case the `log_survival_function`
 must also be defined on `y - 1`.
@@ -128,7 +137,7 @@ The base distribution's `log_cdf` method must be defined on `y - 1`.
 class QuantizedDistribution(distributions.Distribution):
   """Distribution representing the quantization `Y = ceiling(X)`.
 
-  #### Definition in terms of sampling.
+  #### Definition in Terms of Sampling
 
   ```
   1. Draw X
@@ -138,7 +147,7 @@ class QuantizedDistribution(distributions.Distribution):
   5. Return Y
   ```
 
-  #### Definition in terms of the probability mass function.
+  #### Definition in Terms of the Probability Mass Function
 
   Given scalar random variable `X`, we define a discrete random variable `Y`
   supported on the integers as follows:
@@ -170,14 +179,73 @@ class QuantizedDistribution(distributions.Distribution):
 
   `P[Y = j]` is still the mass of `X` within the `jth` interval.
 
-  #### Caveats
+  #### Examples
 
-  Since evaluation of each `P[Y = j]` involves a cdf evaluation (rather than
-  a closed form function such as for a Poisson), computations such as mean and
-  entropy are better done with samples or approximations, and are not
-  implemented by this class.
+  We illustrate a mixture of discretized logistic distributions
+  [(Salimans et al., 2017)][1]. This is used, for example, for capturing 16-bit
+  audio in WaveNet [(van den Oord et al., 2017)][2]. The values range in
+  a 1-D integer domain of `[0, 2**16-1]`, and the discretization captures
+  `P(x - 0.5 < X <= x + 0.5)` for all `x` in the domain excluding the endpoints.
+  The lowest value has probability `P(X <= 0.5)` and the highest value has
+  probability `P(2**16 - 1.5 < X)`.
+
+  Below we assume a `wavenet` function. It takes as `input` right-shifted audio
+  samples of shape `[..., sequence_length]`. It returns a real-valued tensor of
+  shape `[..., num_mixtures * 3]`, i.e., each mixture component has a `loc` and
+  `scale` parameter belonging to the logistic distribution, and a `logits`
+  parameter determining the unnormalized probability of that component.
+
+  ```python
+  import tensorflow_probability as tfp
+  tfd = tfp.distributions
+  tfb = tfp.bijectors
+
+  net = wavenet(inputs)
+  loc, unconstrained_scale, logits = tf.split(net,
+                                              num_or_size_splits=3,
+                                              axis=-1)
+  scale = tf.nn.softplus(unconstrained_scale)
+
+  # Form mixture of discretized logistic distributions. Note we shift the
+  # logistic distribution by -0.5. This lets the quantization capture "rounding"
+  # intervals, `(x-0.5, x+0.5]`, and not "ceiling" intervals, `(x-1, x]`.
+  discretized_logistic_dist = tfd.QuantizedDistribution(
+      distribution=tfd.TransformedDistribution(
+          distribution=tfd.Logistic(loc=loc, scale=scale),
+          bijector=tfb.AffineScalar(shift=-0.5)),
+      low=0.,
+      high=2**16 - 1.)
+  mixture_dist = tfd.MixtureSameFamily(
+      mixture_distribution=tfd.Categorical(logits=logits),
+      components_distribution=discretized_logistic_dist)
+
+  neg_log_likelihood = -tf.reduce_sum(mixture_dist.log_prob(targets))
+  train_op = tf.train.AdamOptimizer().minimize(neg_log_likelihood)
+  ```
+
+  After instantiating `mixture_dist`, we illustrate maximum likelihood by
+  calculating its log-probability of audio samples as `target` and optimizing.
+
+  #### References
+
+  [1]: Tim Salimans, Andrej Karpathy, Xi Chen, and Diederik P. Kingma.
+       PixelCNN++: Improving the PixelCNN with discretized logistic mixture
+       likelihood and other modifications.
+       _International Conference on Learning Representations_, 2017.
+       https://arxiv.org/abs/1701.05517
+  [2]: Aaron van den Oord et al. Parallel WaveNet: Fast High-Fidelity Speech
+       Synthesis. _arXiv preprint arXiv:1711.10433_, 2017.
+       https://arxiv.org/abs/1711.10433
   """
 
+  @deprecation.deprecated(
+      "2018-10-01",
+      "The TensorFlow Distributions library has moved to "
+      "TensorFlow Probability "
+      "(https://github.com/tensorflow/probability). You "
+      "should update all references to use `tfp.distributions` "
+      "instead of `tf.contrib.distributions`.",
+      warn_once=True)
   def __init__(self,
                distribution,
                low=None,
@@ -194,37 +262,37 @@ class QuantizedDistribution(distributions.Distribution):
       distribution:  The base distribution class to transform. Typically an
         instance of `Distribution`.
       low: `Tensor` with same `dtype` as this distribution and shape
-        able to be added to samples.  Should be a whole number.  Default `None`.
+        able to be added to samples. Should be a whole number. Default `None`.
         If provided, base distribution's `prob` should be defined at
         `low`.
       high: `Tensor` with same `dtype` as this distribution and shape
-        able to be added to samples.  Should be a whole number.  Default `None`.
+        able to be added to samples. Should be a whole number. Default `None`.
         If provided, base distribution's `prob` should be defined at
         `high - 1`.
         `high` must be strictly greater than `low`.
-      validate_args: Python `Boolean`, default `False`. When `True` distribution
+      validate_args: Python `bool`, default `False`. When `True` distribution
         parameters are checked for validity despite possibly degrading runtime
         performance. When `False` invalid inputs may silently render incorrect
         outputs.
-      name: `String` name prefixed to Ops created by this class.
+      name: Python `str` name prefixed to Ops created by this class.
 
     Raises:
       TypeError: If `dist_cls` is not a subclass of
           `Distribution` or continuous.
       NotImplementedError:  If the base distribution does not implement `cdf`.
     """
-    parameters = locals()
+    parameters = dict(locals())
     values = (
         list(distribution.parameters.values()) +
         [low, high])
-    with ops.name_scope(name, values=values) as ns:
+    with ops.name_scope(name, values=values) as name:
       self._dist = distribution
 
       if low is not None:
         low = ops.convert_to_tensor(low, name="low")
       if high is not None:
         high = ops.convert_to_tensor(high, name="high")
-      contrib_tensor_util.assert_same_float_dtype(
+      check_ops.assert_same_float_dtype(
           tensors=[self.distribution, low, high])
 
       # We let QuantizedDistribution access _graph_parents since this class is
@@ -232,7 +300,7 @@ class QuantizedDistribution(distributions.Distribution):
       graph_parents = self._dist._graph_parents  # pylint: disable=protected-access
 
       checks = []
-      if low is not None and high is not None:
+      if validate_args and low is not None and high is not None:
         message = "low must be strictly less than high."
         checks.append(
             check_ops.assert_less(
@@ -252,13 +320,27 @@ class QuantizedDistribution(distributions.Distribution):
 
     super(QuantizedDistribution, self).__init__(
         dtype=self._dist.dtype,
-        is_continuous=False,
         reparameterization_type=distributions.NOT_REPARAMETERIZED,
         validate_args=validate_args,
         allow_nan_stats=self._dist.allow_nan_stats,
         parameters=parameters,
         graph_parents=graph_parents,
-        name=ns)
+        name=name)
+
+  @property
+  def distribution(self):
+    """Base distribution, p(x)."""
+    return self._dist
+
+  @property
+  def low(self):
+    """Lowest value that quantization returns."""
+    return self._low
+
+  @property
+  def high(self):
+    """Highest value that quantization returns."""
+    return self._high
 
   def _batch_shape_tensor(self):
     return self.distribution.batch_shape_tensor()
@@ -503,8 +585,3 @@ class QuantizedDistribution(distributions.Distribution):
       dependencies = [distribution_util.assert_integer_form(
           value, message="value has non-integer components.")]
       return control_flow_ops.with_dependencies(dependencies, value)
-
-  @property
-  def distribution(self):
-    """Base distribution, p(x)."""
-    return self._dist

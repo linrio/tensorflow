@@ -16,16 +16,15 @@ limitations under the License.
 #define EIGEN_USE_THREADS
 
 #include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "tensorflow/compiler/xla/service/cpu/custom_call_target_registry.h"
 #include "tensorflow/core/framework/tensor_types.h"
 #include "tensorflow/core/platform/dynamic_annotations.h"
+#include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 
 EIGEN_STRONG_INLINE void argmax_float_1d_xla_impl(void* out, void** data) {
-  // data is managed by the JIT code so msan can't tell it's initialized.
-  TF_ANNOTATE_MEMORY_IS_INITIALIZED(data, 2 * sizeof(void*));
-
   float* input = static_cast<float*>(data[0]);
   int64 input_size = *static_cast<int64*>(data[1]);
 
@@ -43,7 +42,8 @@ EIGEN_STRONG_INLINE void argmax_float_1d_xla_impl(void* out, void** data) {
 
 // Implements argmax on CPU. This is called by an XLA custom call, set up by
 // index_ops.cc.
-extern "C" void __attribute__((visibility("default")))
-argmax_float_1d_xla_impl(void* out, void** data) {
+extern "C" void TF_EXPORT argmax_float_1d_xla_impl(void* out, void** data) {
   tensorflow::argmax_float_1d_xla_impl(out, data);
 }
+
+REGISTER_CUSTOM_CALL_TARGET(argmax_float_1d_xla_impl);

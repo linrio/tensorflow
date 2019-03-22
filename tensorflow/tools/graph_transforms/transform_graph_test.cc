@@ -22,6 +22,7 @@ limitations under the License.
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/lib/io/path.h"
+#include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/test_benchmark.h"
 #include "tensorflow/core/public/session.h"
@@ -112,12 +113,11 @@ class TransformGraphTest : public ::testing::Test {
     graph_transforms::MapNamesToNodes(out_graph_def, &out_node_map);
 
     for (const NodeDef& node : out_graph_def.node()) {
-      const StringPiece name(node.name());
       const int occurrence_count = out_node_map.count(node.name());
-      if (name.ends_with("expect_removed")) {
+      if (str_util::EndsWith(node.name(), "expect_removed")) {
         EXPECT_EQ(0, occurrence_count) << "node.name()=" << node.name();
       }
-      if (name.ends_with("expect_remains")) {
+      if (str_util::EndsWith(node.name(), "expect_remains")) {
         EXPECT_EQ(1, occurrence_count) << "node.name()=" << node.name();
       }
     }
@@ -139,39 +139,40 @@ class TransformGraphTest : public ::testing::Test {
     Status no_such_status =
         TransformGraph({}, {}, {{"test_no_such_transform", {}}}, &graph_def);
     EXPECT_TRUE(
-        StringPiece(no_such_status.ToString()).contains("not recognized"));
+        str_util::StrContains(no_such_status.ToString(), "not recognized"));
   }
 
   void TestParseTransformParameters() {
     TransformParameters params_list;
 
-    ParseTransformParameters("foo", &params_list);
+    TF_EXPECT_OK(ParseTransformParameters("foo", &params_list));
     EXPECT_EQ(1, params_list.size());
     EXPECT_EQ("foo", params_list[0].first);
     EXPECT_TRUE(params_list[0].second.empty());
 
-    ParseTransformParameters("foo bar", &params_list);
+    TF_EXPECT_OK(ParseTransformParameters("foo bar", &params_list));
     EXPECT_EQ(2, params_list.size());
     EXPECT_EQ("foo", params_list[0].first);
     EXPECT_TRUE(params_list[0].second.empty());
     EXPECT_EQ("bar", params_list[1].first);
     EXPECT_TRUE(params_list[1].second.empty());
 
-    ParseTransformParameters("foo() bar()", &params_list);
+    TF_EXPECT_OK(ParseTransformParameters("foo() bar()", &params_list));
     EXPECT_EQ(2, params_list.size());
     EXPECT_EQ("foo", params_list[0].first);
     EXPECT_TRUE(params_list[0].second.empty());
     EXPECT_EQ("bar", params_list[1].first);
     EXPECT_TRUE(params_list[1].second.empty());
 
-    ParseTransformParameters("foo(bob_something=sue)", &params_list);
+    TF_EXPECT_OK(
+        ParseTransformParameters("foo(bob_something=sue)", &params_list));
     EXPECT_EQ(1, params_list.size());
     EXPECT_EQ("foo", params_list[0].first);
     EXPECT_EQ(1, params_list[0].second.count("bob_something"));
     EXPECT_EQ(1, params_list[0].second["bob_something"].size());
     EXPECT_EQ("sue", params_list[0].second["bob_something"][0]);
 
-    ParseTransformParameters("bar(a=1, b=2, a=3)", &params_list);
+    TF_EXPECT_OK(ParseTransformParameters("bar(a=1, b=2, a=3)", &params_list));
     EXPECT_EQ(1, params_list.size());
     EXPECT_EQ("bar", params_list[0].first);
     EXPECT_EQ(1, params_list[0].second.count("a"));
@@ -182,7 +183,8 @@ class TransformGraphTest : public ::testing::Test {
     EXPECT_EQ(1, params_list[0].second["b"].size());
     EXPECT_EQ("2", params_list[0].second["b"][0]);
 
-    ParseTransformParameters("bar(a=\"1\", b=\"1,2,3\", a=3)", &params_list);
+    TF_EXPECT_OK(ParseTransformParameters("bar(a=\"1\", b=\"1,2,3\", a=3)",
+                                          &params_list));
     EXPECT_EQ(1, params_list.size());
     EXPECT_EQ("bar", params_list[0].first);
     EXPECT_EQ(1, params_list[0].second.count("a"));
@@ -192,6 +194,28 @@ class TransformGraphTest : public ::testing::Test {
     EXPECT_EQ(1, params_list[0].second.count("b"));
     EXPECT_EQ(1, params_list[0].second["b"].size());
     EXPECT_EQ("1,2,3", params_list[0].second["b"][0]);
+  }
+
+  void TestParseEscapedNewline() {
+    // This sequence of characters caused an infinite loop in the parser, which
+    // is responsible for the hang mentioned in
+    // https://github.com/tensorflow/tensorflow/issues/7150
+    TransformParameters params_list;
+    ParseTransformParameters("\\\n", &params_list).IgnoreError();
+    EXPECT_EQ(0, params_list.size());
+  }
+
+  void TestParseExtraSpaces() {
+    TransformParameters params_list;
+    ParseTransformParameters(" ", &params_list).IgnoreError();
+    EXPECT_EQ(0, params_list.size());
+
+    TF_EXPECT_OK(ParseTransformParameters("  foo bar \\\n", &params_list));
+    EXPECT_EQ(2, params_list.size());
+    EXPECT_EQ("foo", params_list[0].first);
+    EXPECT_TRUE(params_list[0].second.empty());
+    EXPECT_EQ("bar", params_list[1].first);
+    EXPECT_TRUE(params_list[1].second.empty());
   }
 
   void TestShouldIgnoreErrors() {
@@ -220,6 +244,10 @@ TEST_F(TransformGraphTest, TestTransformRegistration) {
 
 TEST_F(TransformGraphTest, TestParseTransformParameters) {
   TestParseTransformParameters();
+}
+
+TEST_F(TransformGraphTest, TestParseEscapedNewline) {
+  TestParseEscapedNewline();
 }
 
 TEST_F(TransformGraphTest, TestShouldIgnoreErrors) { TestShouldIgnoreErrors(); }

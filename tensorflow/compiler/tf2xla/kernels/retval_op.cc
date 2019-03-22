@@ -13,10 +13,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/compiler/tf2xla/xla_compilation_device.h"
+#include "tensorflow/compiler/tf2xla/shape_util.h"
 #include "tensorflow/compiler/tf2xla/xla_context.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
-#include "tensorflow/compiler/xla/client/computation_builder.h"
+#include "tensorflow/compiler/tf2xla/xla_op_registry.h"
+#include "tensorflow/compiler/xla/client/xla_builder.h"
+#include "tensorflow/compiler/xla/status_macros.h"
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/op_kernel.h"
 
@@ -35,33 +37,21 @@ class RetvalOp : public XlaOpKernel {
   void Compile(XlaOpKernelContext* ctx) override {
     const Tensor& input = ctx->op_kernel_context()->input(0);
 
-    OP_REQUIRES(ctx, input.dtype() == dtype_,
-                errors::InvalidArgument(
-                    "Type mismatch: actual ", DataTypeString(input.dtype()),
-                    " vs. expect ", DataTypeString(dtype_)));
+    // DT_VARIANT types represent Tensor Lists and are wrapped in a DT_UINT8
+    // tensor so we skip the check here.
+    if (dtype_ != DT_VARIANT) {
+      OP_REQUIRES(ctx, input.dtype() == dtype_,
+                  errors::InvalidArgument(
+                      "Type mismatch: actual ", DataTypeString(input.dtype()),
+                      " vs. expect ", DataTypeString(dtype_)));
+    }
     auto frame = ctx->call_frame();
     if (frame) {
       // If 'frame' is non-null, this is an inner function call inside a JIT
       // compilation.
-      frame->SetRetval(index_, input);
+      OP_REQUIRES_OK(ctx, frame->SetRetval(index_, input));
     } else {
-      xla::ComputationDataHandle input = ctx->Input(0);
-      const TensorShape input_shape = ctx->InputShape(0);
-
-      auto is_constant = ctx->builder()->IsConstant(input);
-      if (!is_constant.ok()) {
-        ctx->SetStatus(is_constant.status());
-        return;
-      }
-
-      XlaContext& tc = XlaContext::Get(ctx);
-      if (input_shape.num_elements() == 0 || is_constant.ValueOrDie()) {
-        xla::Literal literal;
-        OP_REQUIRES_OK(ctx, ctx->ConstantInput(0, &literal));
-        tc.AddConstRetval(index_, dtype_, literal);
-      } else {
-        tc.AddRetval(index_, input);
-      }
+      ctx->xla_context()->SetRetval(index_, ctx->InputExpression(0));
     }
   }
 
@@ -73,7 +63,9 @@ class RetvalOp : public XlaOpKernel {
   TF_DISALLOW_COPY_AND_ASSIGN(RetvalOp);
 };
 
-REGISTER_XLA_OP("_Retval", RetvalOp);
+REGISTER_XLA_OP(
+    Name("_Retval").AllowResourceTypes().AllowVariantTypes().CompilationOnly(),
+    RetvalOp);
 
 }  // anonymous namespace
 }  // namespace tensorflow

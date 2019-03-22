@@ -29,6 +29,7 @@ from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import functional_ops
+from tensorflow.python.ops import map_fn as map_fn_lib
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import numerics
 from tensorflow.python.ops import random_ops
@@ -51,8 +52,7 @@ def _gather_1d_on_axis(labeled_tensor, indexer, axis, name=None):
 @tc.returns(core.LabeledTensor)
 @tc.accepts(core.LabeledTensorLike,
             tc.Mapping(string_types,
-                       tc.Union(slice, collections.Hashable,
-                                collections.Sequence)),
+                       tc.Union(slice, collections.Hashable, list)),
             tc.Optional(string_types))
 def select(labeled_tensor, selection, name=None):
   """Slice out a subset of the tensor.
@@ -110,23 +110,22 @@ def select(labeled_tensor, selection, name=None):
 
         slices[axis_name] = slice(start, stop)
 
-      else:
-        # We're allowing anything NumPy treats as a scalar or 1D array.
-        value = np.asarray(value)
-        if value.ndim == 0:
-          slices[axis_name] = axis.index(value.item())
-        elif value.ndim == 1:
-          if indexers:
-            raise NotImplementedError(
-                'select does not yet support more than one list selection at '
-                'the same time')
-          indexer = [axis.index(v) for v in value.tolist()]
-          indexers[axis_name] = ops.convert_to_tensor(
-              indexer, dtype=dtypes.int64)
-        else:
+      # Needs to be after checking for slices, since slice objects claim to be
+      # instances of collections.Hashable but hash() on them fails.
+      elif isinstance(value, collections.Hashable):
+        slices[axis_name] = axis.index(value)
+
+      elif isinstance(value, list):
+        if indexers:
           raise NotImplementedError(
-              'select does not yet support selections with more than one '
-              'dimension: %s on axis %r' % (value, axis_name))
+              'select does not yet support more than one list selection at '
+              'the same time')
+        indexer = [axis.index(v) for v in value]
+        indexers[axis_name] = ops.convert_to_tensor(indexer, dtype=dtypes.int64)
+
+      else:
+        # If type checking is working properly, this shouldn't be possible.
+        raise TypeError('cannot handle arbitrary types')
 
     if indexers and slices:
       raise NotImplementedError(
@@ -631,7 +630,7 @@ def map_fn(fn, labeled_tensor, name=None):
 
     # TODO(ericmc): Fix this upstream.
     if labeled_tensor.dtype == dtypes.string:
-      # We must construct the full graph here, because functional_ops.map_fn
+      # We must construct the full graph here, because map_fn_lib.map_fn
       # doesn't work for string-valued tensors.
       # Constructing the full graph may be slow.
       map_lts = [fn(t) for t in unpack_lts]
@@ -654,7 +653,8 @@ def map_fn(fn, labeled_tensor, name=None):
         tensor_lt = core.LabeledTensor(tensor, original_axes)
         return fn(tensor_lt).tensor
 
-      map_op = functional_ops.map_fn(tf_fn, labeled_tensor.tensor)
+      map_op = map_fn_lib.map_fn(
+          tf_fn, labeled_tensor.tensor, dtype=first_map_lt.dtype)
       map_lt = core.LabeledTensor(map_op, final_axes)
 
       return core.identity(map_lt, name=scope)
@@ -953,7 +953,7 @@ def define_reduce_op(op_name, reduce_fn):
           intermediate_axes.append(axis)
 
       reduce_op = reduce_fn(
-          labeled_tensor.tensor, reduction_dimensions, keep_dims=True)
+          labeled_tensor.tensor, reduction_dimensions, keepdims=True)
       reduce_lt = core.LabeledTensor(reduce_op, intermediate_axes)
 
       return squeeze(reduce_lt, axes_to_squeeze, name=scope)

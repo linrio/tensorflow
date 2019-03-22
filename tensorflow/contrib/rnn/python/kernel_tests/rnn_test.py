@@ -19,21 +19,15 @@ from __future__ import division
 from __future__ import print_function
 
 import itertools
-import sys
-
-# TODO: #6568 Remove this hack that makes dlopen() not crash.
-if hasattr(sys, "getdlopenflags") and hasattr(sys, "setdlopenflags"):
-  import ctypes
-  sys.setdlopenflags(sys.getdlopenflags() | ctypes.RTLD_GLOBAL)
 
 import numpy as np
 
-from tensorflow.contrib.rnn.python.ops import core_rnn_cell_impl
-from tensorflow.contrib.rnn.python.ops import rnn
+from tensorflow.contrib.rnn.python.ops import rnn as contrib_rnn
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import init_ops
+from tensorflow.python.ops import rnn_cell
 from tensorflow.python.ops import variable_scope
 from tensorflow.python.ops import variables
 from tensorflow.python.platform import test
@@ -64,14 +58,14 @@ class StackBidirectionalRNNTest(test.TestCase):
         dtypes.int64) if use_sequence_length else None
 
     self.cells_fw = [
-        core_rnn_cell_impl.LSTMCell(
+        rnn_cell.LSTMCell(
             num_units,
             input_size,
             initializer=initializer,
             state_is_tuple=False) for num_units in self.layers
     ]
     self.cells_bw = [
-        core_rnn_cell_impl.LSTMCell(
+        rnn_cell.LSTMCell(
             num_units,
             input_size,
             initializer=initializer,
@@ -83,7 +77,7 @@ class StackBidirectionalRNNTest(test.TestCase):
             dtypes.float32,
             shape=(batch_size, input_size) if use_shape else (None, input_size))
     ]
-    outputs, state_fw, state_bw = rnn.stack_bidirectional_rnn(
+    outputs, state_fw, state_bw = contrib_rnn.stack_bidirectional_rnn(
         self.cells_fw,
         self.cells_bw,
         inputs,
@@ -105,7 +99,7 @@ class StackBidirectionalRNNTest(test.TestCase):
     return input_value, inputs, outputs, state_fw, state_bw, sequence_length
 
   def _testStackBidirectionalRNN(self, use_gpu, use_shape):
-    with self.test_session(use_gpu=use_gpu, graph=ops.Graph()) as sess:
+    with self.session(use_gpu=use_gpu, graph=ops.Graph()) as sess:
       input_value, inputs, outputs, state_fw, state_bw, sequence_length = (
           self._createStackBidirectionalRNN(use_gpu, use_shape, True))
       variables.global_variables_initializer().run()
@@ -162,10 +156,10 @@ class StackBidirectionalRNNTest(test.TestCase):
     # - Reset states, and iterate for 5 steps. Last state is state_5.
     # - Reset the sets to state_3 and iterate for 2 more steps,
     #   last state will be state_5'.
-    # - Check that the  state_5 and state_5' (forward and backward) are the
+    # - Check that the state_5 and state_5' (forward and backward) are the
     #   same for the first layer (it does not apply for the second layer since
     #   it has forward-backward dependencies).
-    with self.test_session(use_gpu=use_gpu, graph=ops.Graph()) as sess:
+    with self.session(use_gpu=use_gpu, graph=ops.Graph()) as sess:
       batch_size = 2
       # Create states placeholders.
       initial_states_fw = [
@@ -243,14 +237,14 @@ class StackBidirectionalRNNTest(test.TestCase):
     sequence_length = array_ops.placeholder(dtypes.int64)
 
     self.cells_fw = [
-        core_rnn_cell_impl.LSTMCell(
+        rnn_cell.LSTMCell(
             num_units,
             input_size,
             initializer=initializer,
             state_is_tuple=False) for num_units in self.layers
     ]
     self.cells_bw = [
-        core_rnn_cell_impl.LSTMCell(
+        rnn_cell.LSTMCell(
             num_units,
             input_size,
             initializer=initializer,
@@ -264,7 +258,7 @@ class StackBidirectionalRNNTest(test.TestCase):
     ]
     inputs_c = array_ops.stack(inputs)
     inputs_c = array_ops.transpose(inputs_c, [1, 0, 2])
-    outputs, st_fw, st_bw = rnn.stack_bidirectional_dynamic_rnn(
+    outputs, st_fw, st_bw = contrib_rnn.stack_bidirectional_dynamic_rnn(
         self.cells_fw,
         self.cells_bw,
         inputs_c,
@@ -287,7 +281,7 @@ class StackBidirectionalRNNTest(test.TestCase):
 
   def _testStackBidirectionalDynamicRNN(self, use_gpu, use_shape,
                                         use_state_tuple):
-    with self.test_session(use_gpu=use_gpu, graph=ops.Graph()) as sess:
+    with self.session(use_gpu=use_gpu, graph=ops.Graph()) as sess:
       input_value, inputs, outputs, state_fw, state_bw, sequence_length = (
           self._createStackBidirectionalDynamicRNN(use_gpu, use_shape,
                                                    use_state_tuple))
@@ -346,10 +340,10 @@ class StackBidirectionalRNNTest(test.TestCase):
     # - Reset states, and iterate for 5 steps. Last state is state_5.
     # - Reset the sets to state_3 and iterate for 2 more steps,
     #   last state will be state_5'.
-    # - Check that the  state_5 and state_5' (forward and backward) are the
+    # - Check that the state_5 and state_5' (forward and backward) are the
     #   same for the first layer (it does not apply for the second layer since
     #   it has forward-backward dependencies).
-    with self.test_session(use_gpu=use_gpu, graph=ops.Graph()) as sess:
+    with self.session(use_gpu=use_gpu, graph=ops.Graph()) as sess:
       batch_size = 2
       # Create states placeholders.
       initial_states_fw = [
@@ -420,7 +414,7 @@ class StackBidirectionalRNNTest(test.TestCase):
     # REMARKS: factory(scope) is a function accepting a scope
     #          as an argument, such scope can be None, a string
     #          or a VariableScope instance.
-    with self.test_session(use_gpu=True, graph=ops.Graph()):
+    with self.session(use_gpu=True, graph=ops.Graph()):
       if use_outer_scope:
         with variable_scope.variable_scope(prefix) as scope:
           factory(scope)

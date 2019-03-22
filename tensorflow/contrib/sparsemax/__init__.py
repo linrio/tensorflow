@@ -14,7 +14,7 @@
 # ==============================================================================
 """Module that implements sparsemax and sparsemax loss, see [1].
 
-[1] https://arxiv.org/abs/1602.02068
+[1]: https://arxiv.org/abs/1602.02068
 
 ## Sparsemax
 
@@ -28,3 +28,8 @@ from __future__ import print_function
 from tensorflow.contrib.sparsemax.python.ops.sparsemax import sparsemax
 from tensorflow.contrib.sparsemax.python.ops.sparsemax_loss \
     import sparsemax_loss
+from tensorflow.python.util.all_util import remove_undocumented
+
+_allowed_symbols = ['sparsemax', 'sparsemax_loss']
+
+remove_undocumented(__name__, _allowed_symbols)

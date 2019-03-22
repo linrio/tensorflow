@@ -105,7 +105,7 @@ void RangeSampler::SampleBatchGetExpectedCountAvoid(
     num_tries = batch_size;
   }
   // Compute the expected counts of the batch and the extra values
-  if (batch_expected_count.size() > 0) {
+  if (!batch_expected_count.empty()) {
     CHECK_EQ(batch_size, batch_expected_count.size());
     for (int i = 0; i < batch_size; i++) {
       batch_expected_count[i] =
@@ -131,7 +131,7 @@ void AllSampler::SampleBatchGetExpectedCountAvoid(
   for (int i = 0; i < batch_size; i++) {
     batch[i] = i;
   }
-  if (batch_expected_count.size() > 0) {
+  if (!batch_expected_count.empty()) {
     CHECK_EQ(batch_size, batch_expected_count.size());
     for (int i = 0; i < batch_size; i++) {
       batch_expected_count[i] = 1;
@@ -154,7 +154,7 @@ int64 UniformSampler::Sample(random::SimplePhilox* rnd) const {
 float UniformSampler::Probability(int64 value) const { return inv_range_; }
 
 LogUniformSampler::LogUniformSampler(int64 range)
-    : RangeSampler(range), log_range_(log(range + 1)) {}
+    : RangeSampler(range), log_range_(log1p(range)) {}
 
 int64 LogUniformSampler::Sample(random::SimplePhilox* rnd) const {
   const int64 value =
@@ -262,6 +262,9 @@ FixedUnigramSampler::FixedUnigramSampler(int64 range,
 }
 
 float FixedUnigramSampler::Probability(int64 value) const {
+  if (value < 0 || static_cast<size_t>(value) >= weights_.size()) {
+    return 0.0;
+  }
   return weights_.at(value) / total_weight_;
 }
 
@@ -287,11 +290,11 @@ Status FixedUnigramSampler::LoadFromFile(Env* env, const string& vocab_file,
     // The vocabulary file should be in csv like format, with the last
     // field the weight associated with the word.
     std::vector<string> cols = str_util::Split(line, ',');
-    if (cols.size() == 0) continue;
+    if (cols.empty()) continue;
     // Skip entries that do not belong to this shard.
     if (word_id % num_shards_ == shard_) {
       float w = 0.0;
-      if (!strings::safe_strtof(cols.at(cols.size() - 1).c_str(), &w)) {
+      if (!strings::safe_strtof(cols.at(cols.size() - 1), &w)) {
         return errors::InvalidArgument("Wrong vocabulary format at line: ",
                                        line);
       }

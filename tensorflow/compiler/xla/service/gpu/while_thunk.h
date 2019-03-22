@@ -19,6 +19,7 @@ limitations under the License.
 #include <vector>
 
 #include "tensorflow/compiler/xla/service/gpu/buffer_allocations.h"
+#include "tensorflow/compiler/xla/service/gpu/hlo_execution_profiler.h"
 #include "tensorflow/compiler/xla/service/gpu/sequential_thunk.h"
 #include "tensorflow/compiler/xla/service/gpu/thunk.h"
 #include "tensorflow/compiler/xla/service/hlo_instruction.h"
@@ -38,20 +39,21 @@ namespace gpu {
 class WhileThunk : public Thunk {
  public:
   // Constructs a WhileThunk to compute while instruction 'hlo'.
-  WhileThunk(BufferAllocation::Index condition_result_buffer_index,
+  WhileThunk(const BufferAllocation::Slice& condition_result_buffer_index,
              std::unique_ptr<ThunkSequence> condition_thunk_sequence,
              std::unique_ptr<ThunkSequence> body_thunk_sequence,
              const HloInstruction* hlo);
   WhileThunk(const WhileThunk&) = delete;
   WhileThunk& operator=(const WhileThunk&) = delete;
 
-  tensorflow::Status Initialize(const GpuExecutable& executable) override;
-  tensorflow::Status ExecuteOnStream(
-      const BufferAllocations& buffer_allocations,
-      perftools::gputools::Stream* stream) override;
+  Status Initialize(const GpuExecutable& executable,
+                    se::StreamExecutor* executor) override;
+  Status ExecuteOnStream(const BufferAllocations& buffer_allocations,
+                         se::Stream* stream,
+                         HloExecutionProfiler* profiler) override;
 
  private:
-  BufferAllocation::Index condition_result_buffer_index_;
+  const BufferAllocation::Slice condition_result_buffer_index_;
   std::unique_ptr<SequentialThunk> condition_thunk_sequence_;
   std::unique_ptr<SequentialThunk> body_thunk_sequence_;
 };

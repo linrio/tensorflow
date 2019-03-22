@@ -34,7 +34,7 @@ def _has_valid_dims(weights_shape, values_shape):
   with ops.name_scope(
       None, "has_invalid_dims", (weights_shape, values_shape)) as scope:
     values_shape_2d = array_ops.expand_dims(values_shape, -1)
-    valid_dims = array_ops.concat_v2(
+    valid_dims = array_ops.concat(
         (values_shape_2d, array_ops.ones_like(values_shape_2d)), axis=1)
     weights_shape_2d = array_ops.expand_dims(weights_shape, -1)
     invalid_dims = sets.set_difference(weights_shape_2d, valid_dims)
@@ -97,9 +97,10 @@ def assert_broadcastable(weights, values):
         return control_flow_ops.no_op(name="static_scalar_check_success")
       if weights_rank_static != values_rank_static:
         raise ValueError(
-            "%s values.rank=%s. weights.rank=%s." % (
+            "%s values.rank=%s. weights.rank=%s."
+            " values.shape=%s. weights.shape=%s." % (
                 _ASSERT_BROADCASTABLE_ERROR_PREFIX, values_rank_static,
-                weights_rank_static))
+                weights_rank_static, values.shape, weights.shape))
       weights_shape_static = tensor_util.constant_value(weights_shape)
       values_shape_static = tensor_util.constant_value(values_shape)
       if weights_shape_static is not None and values_shape_static is not None:

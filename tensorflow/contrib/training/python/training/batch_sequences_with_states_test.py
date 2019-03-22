@@ -30,6 +30,7 @@ from tensorflow.python.framework import sparse_tensor
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import random_ops
+from tensorflow.python.ops import sparse_ops
 from tensorflow.python.ops import string_ops
 from tensorflow.python.ops import variables
 from tensorflow.python.platform import test
@@ -52,7 +53,7 @@ class BatchSequencesWithStatesTest(test.TestCase):
     sp_tensor1 = sparse_tensor.SparseTensor(
         array_ops.constant(ind1, dtypes.int64),
         array_ops.constant(val1, dtypes.int64),
-        array_ops.constant(shape1, dtypes.int64))
+        array_ops.placeholder_with_default(shape1, shape=[2]))
     ind2 = np.array([
         [0, 0, 1],
         [0, 1, 0],
@@ -67,7 +68,17 @@ class BatchSequencesWithStatesTest(test.TestCase):
     sp_tensor2 = sparse_tensor.SparseTensor(
         array_ops.constant(ind2, dtypes.int64),
         array_ops.constant(val2, dtypes.int64),
-        array_ops.constant(shape2, dtypes.int64))
+        array_ops.placeholder_with_default(shape2, shape=[3]))
+    sp_tensor3 = sparse_tensor.SparseTensor(
+        array_ops.constant([[1, 9], [2, 2], [2, 10]], dtypes.int64),
+        array_ops.constant([7, 15, 2], dtypes.int64),
+        array_ops.constant([5, 12], dtypes.int64)
+    )
+    self.sp_tensor3_expected = sparse_tensor.SparseTensorValue(
+        [[0, 1, 9], [0, 2, 2], [0, 2, 10], [1, 1, 9], [1, 2, 2], [1, 2, 10]],
+        [7, 15, 2, 7, 15, 2],
+        [2, 5, 12]
+    )
     self.batch_size = 2
     self.key = string_ops.string_join([
         "key_", string_ops.as_string(
@@ -78,7 +89,9 @@ class BatchSequencesWithStatesTest(test.TestCase):
         "seq2": np.random.rand(self.value_length, 4, 2),
         "seq3": sp_tensor1,
         "seq4": sp_tensor2}
-    self.context = {"context1": [3, 4]}
+    self.context = {
+        "context1": [3, 4],
+        "sp_context": sp_tensor3}
     self.initial_states = {
         "state1": np.random.rand(6, 7),
         "state2": np.random.rand(8)
@@ -92,11 +105,12 @@ class BatchSequencesWithStatesTest(test.TestCase):
                   expected_seq1_batch1, expected_seq2_batch1,
                   expected_seq1_batch2, expected_seq2_batch2,
                   expected_seq3_batch1, expected_seq3_batch2,
-                  expected_seq4_batch1, expected_seq4_batch2):
+                  expected_seq4_batch1, expected_seq4_batch2,
+                  key=None, make_keys_unique=False):
 
-    with self.test_session() as sess:
+    with self.cached_session() as sess:
       next_batch = sqss.batch_sequences_with_states(
-          input_key=self.key,
+          input_key=key if key is not None else self.key,
           input_sequences=self.sequences,
           input_context=self.context,
           input_length=length,
@@ -107,7 +121,9 @@ class BatchSequencesWithStatesTest(test.TestCase):
           # to enforce that we only move on to the next examples after finishing
           # all segments of the first ones.
           capacity=2,
-          pad=pad)
+          pad=pad,
+          make_keys_unique=make_keys_unique,
+          make_keys_unique_seed=9)
 
       state1 = next_batch.state("state1")
       state2 = next_batch.state("state2")
@@ -131,12 +147,13 @@ class BatchSequencesWithStatesTest(test.TestCase):
 
       # Step 1
       (key_value, next_key_value, seq1_value, seq2_value, seq3_value,
-       seq4_value, context1_value, state1_value, state2_value, length_value,
-       _, _) = sess.run(
+       seq4_value, context1_value, context2_value, state1_value, state2_value,
+       length_value, _, _) = sess.run(
            (next_batch.key, next_batch.next_key, next_batch.sequences["seq1"],
             next_batch.sequences["seq2"], next_batch.sequences["seq3"],
             next_batch.sequences["seq4"], next_batch.context["context1"],
-            state1, state2, next_batch.length, state1_update, state2_update))
+            next_batch.context["sp_context"], state1, state2, next_batch.length,
+            state1_update, state2_update))
       expected_first_keys = set([b"00000_of_00002"])
       expected_second_keys = set([b"00001_of_00002"])
       expected_final_keys = set([b"STOP"])
@@ -146,6 +163,12 @@ class BatchSequencesWithStatesTest(test.TestCase):
       self.assertAllEqual(
           np.tile(self.context["context1"], (self.batch_size, 1)),
           context1_value)
+      self.assertAllEqual(self.sp_tensor3_expected.indices,
+                          context2_value.indices)
+      self.assertAllEqual(self.sp_tensor3_expected.values,
+                          context2_value.values)
+      self.assertAllEqual(self.sp_tensor3_expected.dense_shape,
+                          context2_value.dense_shape)
       self.assertAllEqual(expected_seq1_batch1, seq1_value)
       self.assertAllEqual(expected_seq2_batch1, seq2_value)
       self.assertAllEqual(expected_seq3_batch1.indices, seq3_value.indices)
@@ -166,18 +189,25 @@ class BatchSequencesWithStatesTest(test.TestCase):
 
       # Step 2
       (key_value, next_key_value, seq1_value, seq2_value, seq3_value,
-       seq4_value, context1_value, state1_value, state2_value, length_value,
-       _, _) = sess.run(
+       seq4_value, context1_value, context2_value, state1_value, state2_value,
+       length_value, _, _) = sess.run(
            (next_batch.key, next_batch.next_key, next_batch.sequences["seq1"],
             next_batch.sequences["seq2"], next_batch.sequences["seq3"],
             next_batch.sequences["seq4"], next_batch.context["context1"],
-            state1, state2, next_batch.length, state1_update, state2_update))
+            next_batch.context["sp_context"], state1, state2, next_batch.length,
+            state1_update, state2_update))
 
       self.assertEqual(expected_second_keys, self._prefix(key_value))
       self.assertEqual(expected_final_keys, self._prefix(next_key_value))
       self.assertAllEqual(
           np.tile(self.context["context1"], (self.batch_size, 1)),
           context1_value)
+      self.assertAllEqual(self.sp_tensor3_expected.indices,
+                          context2_value.indices)
+      self.assertAllEqual(self.sp_tensor3_expected.values,
+                          context2_value.values)
+      self.assertAllEqual(self.sp_tensor3_expected.dense_shape,
+                          context2_value.dense_shape)
       self.assertAllEqual(expected_seq1_batch2, seq1_value)
       self.assertAllEqual(expected_seq2_batch2, seq2_value)
       self.assertAllEqual(expected_seq3_batch2.indices, seq3_value.indices)
@@ -197,7 +227,7 @@ class BatchSequencesWithStatesTest(test.TestCase):
       coord.request_stop()
       coord.join(threads, stop_grace_period_secs=2)
 
-  def _testBasicPadding(self, pad):
+  def _testBasicPadding(self, pad, key=None, make_keys_unique=False):
     num_unroll = 2  # Divisor of value_length - so no padding necessary.
     expected_seq1_batch1 = np.tile(
         self.sequences["seq1"][np.newaxis, 0:num_unroll, :],
@@ -272,7 +302,9 @@ class BatchSequencesWithStatesTest(test.TestCase):
         expected_seq3_batch1=expected_seq3_batch1,
         expected_seq3_batch2=expected_seq3_batch2,
         expected_seq4_batch1=expected_seq4_batch1,
-        expected_seq4_batch2=expected_seq4_batch2)
+        expected_seq4_batch2=expected_seq4_batch2,
+        key=key,
+        make_keys_unique=make_keys_unique)
 
   def testBasicPadding(self):
     self._testBasicPadding(pad=True)
@@ -280,10 +312,27 @@ class BatchSequencesWithStatesTest(test.TestCase):
   def testBasicNoPadding(self):
     self._testBasicPadding(pad=False)
 
+  def testRandomKeyGen(self):
+    self._testBasicPadding(pad=False,
+                           key=constant_op.constant("fixed_key"),
+                           make_keys_unique=True)
+
   def testNotAMultiple(self):
     num_unroll = 3  # Not a divisor of value_length -
     # so padding would have been necessary.
-    with self.test_session() as sess:
+
+    # Use placeholder_with_default in sequences to make sure we get runtime
+    # error instead of shape inference error
+    sequences = {
+        "seq1": array_ops.placeholder_with_default(self.sequences["seq1"],
+                                                   shape=(None, 5)),
+        "seq2": array_ops.placeholder_with_default(self.sequences["seq2"],
+                                                   shape=(None, 4, 2)),
+        "seq3": self.sequences["seq3"],
+        "seq4": self.sequences["seq4"],
+    }
+
+    with self.cached_session() as sess:
       with self.assertRaisesRegexp(errors_impl.InvalidArgumentError,
                                    ".*should be a multiple of: 3, but saw "
                                    "value: 4. Consider setting pad=True."):
@@ -293,7 +342,7 @@ class BatchSequencesWithStatesTest(test.TestCase):
           with coord.stop_on_exception():
             next_batch = sqss.batch_sequences_with_states(
                 input_key=self.key,
-                input_sequences=self.sequences,
+                input_sequences=sequences,
                 input_context=self.context,
                 input_length=3,
                 initial_states=self.initial_states,
@@ -391,6 +440,57 @@ class BatchSequencesWithStatesTest(test.TestCase):
     expected_seq4_batch2 = sparse_tensor.SparseTensorValue(
         np.empty(shape=[0, 4], dtype=np.int64), np.array([]), shape2)
 
+    ind1_1 = np.array([
+        # batch entry 1
+        [0, 0, 0],
+        [0, 1, 0], [0, 1, 3], [0, 1, 4],
+        # batch entry 2
+        [1, 0, 0],
+        [1, 1, 0], [1, 1, 3], [1, 1, 4]])
+    ind1_2 = np.array([
+        # batch entry 1
+        [0, 0, 2], [0, 0, 3],
+        # batch entry 2
+        [1, 0, 2], [1, 0, 3]])
+    val1_1 = np.array([0, 10, 13, 14,
+                       0, 10, 13, 14])
+    val1_2 = np.array([32, 33,
+                       32, 33])
+    shape1 = np.array([self.batch_size, num_unroll, 6])
+
+    # For sp_tensor2 all values fall into the first segment.
+    ind2_1 = np.array([
+        # batch entry 1
+        [0, 0, 0, 1],
+        [0, 0, 1, 0],
+        [0, 0, 1, 2],
+        [0, 1, 0, 3],
+        [0, 1, 1, 0],
+        [0, 1, 1, 1],
+        [0, 1, 1, 2],
+        [0, 1, 2, 2],
+        # batch entry 2
+        [1, 0, 0, 1],
+        [1, 0, 1, 0],
+        [1, 0, 1, 2],
+        [1, 1, 0, 3],
+        [1, 1, 1, 0],
+        [1, 1, 1, 1],
+        [1, 1, 1, 2],
+        [1, 1, 2, 2],
+    ])
+    val2_1 = np.array([1, 10, 12, 103, 150, 149, 150, 122,
+                       1, 10, 12, 103, 150, 149, 150, 122])
+    shape2 = np.array([self.batch_size, num_unroll, 3, 4])
+    expected_seq3_batch1 = sparse_tensor.SparseTensorValue(
+        ind1_1, val1_1, shape1)
+    expected_seq3_batch2 = sparse_tensor.SparseTensorValue(
+        ind1_2, val1_2, shape1)
+    expected_seq4_batch1 = sparse_tensor.SparseTensorValue(
+        ind2_1, val2_1, shape2)
+    expected_seq4_batch2 = sparse_tensor.SparseTensorValue(
+        np.empty(shape=[0, 4], dtype=np.int64), np.array([]), shape2)
+
     self._testBasics(
         num_unroll=num_unroll,
         length=None,
@@ -408,7 +508,7 @@ class BatchSequencesWithStatesTest(test.TestCase):
 class PaddingTest(test.TestCase):
 
   def testPaddingInvalidLengths(self):
-    with ops.Graph().as_default() as g, self.test_session(graph=g):
+    with ops.Graph().as_default() as g, self.session(graph=g):
       sequences = {
           "key_1": constant_op.constant([1, 2, 3]),  # length 3
           "key_2": constant_op.constant([1.5, 2.5])  # length 2
@@ -420,7 +520,7 @@ class PaddingTest(test.TestCase):
         padded_seq["key_1"].eval()
 
   def testPadding(self):
-    with ops.Graph().as_default() as g, self.test_session(graph=g):
+    with ops.Graph().as_default() as g, self.session(graph=g):
       sequences = {
           "key_1": constant_op.constant([1, 2]),
           "key_2": constant_op.constant([0.5, -1.0]),
@@ -439,6 +539,50 @@ class PaddingTest(test.TestCase):
       for key, val in expected_padded_seq.items():
         self.assertTrue(
             math_ops.reduce_all(math_ops.equal(val, padded_seq[key])).eval())
+
+  def testPaddingOnlySparse(self):
+    ind1 = np.array([[0], [2]])
+    val1 = np.array([3, 4])
+    shape1 = np.array([4])
+
+    ind2 = np.array([[1], [2]])
+    val2 = np.array([9, 12])
+    shape2 = np.array([5])
+
+    with ops.Graph().as_default() as g, self.session(graph=g):
+      sp_tensor1 = sparse_tensor.SparseTensor(
+          indices=array_ops.constant(ind1, dtypes.int64),
+          values=array_ops.constant(val1, dtypes.int64),
+          dense_shape=array_ops.constant(shape1, dtypes.int64))
+      sp_tensor2 = sparse_tensor.SparseTensor(
+          indices=array_ops.constant(ind2, dtypes.int64),
+          values=array_ops.constant(val2, dtypes.int64),
+          dense_shape=array_ops.constant(shape2, dtypes.int64))
+
+      sp_tensor1_expected = sparse_tensor.SparseTensor(
+          indices=sp_tensor1.indices,
+          values=sp_tensor1.values,
+          dense_shape=[8])
+      sp_tensor2_expected = sparse_tensor.SparseTensor(
+          indices=sp_tensor2.indices,
+          values=sp_tensor2.values,
+          dense_shape=[8])
+
+      sequences = {
+          "key_1": sp_tensor1,
+          "key_2": sp_tensor2,
+      }
+      _, padded_seq = sqss._padding(sequences, 4)
+
+      expected_padded_seq = {
+          "key_1": sp_tensor1_expected,
+          "key_2": sp_tensor2_expected,
+      }
+
+      for key, val in expected_padded_seq.items():
+        self.assertAllEqual(
+            sparse_ops.sparse_tensor_to_dense(val).eval(),
+            sparse_ops.sparse_tensor_to_dense(padded_seq[key]).eval())
 
 
 class SparseTensorReConstructionTest(test.TestCase):

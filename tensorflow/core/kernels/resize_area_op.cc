@@ -33,7 +33,6 @@ namespace tensorflow {
 typedef Eigen::ThreadPoolDevice CPUDevice;
 
 namespace {
-
 struct CachedInterpolation {
   int64 start;
   int64 end;
@@ -41,7 +40,7 @@ struct CachedInterpolation {
   float end_minus_one_scale;
   bool needs_bounding;
 };
-};
+}  // namespace
 
 template <typename Device, typename T>
 class ResizeAreaOp : public OpKernel {
@@ -145,12 +144,16 @@ class ResizeAreaOp : public OpKernel {
 
   void Compute(OpKernelContext* context) override {
     const Tensor& input = context->input(0);
-    ImageResizerState st(align_corners_);
+    // The op always did the correct thing with regard to pixel centers, so we
+    // always pass false here for half_pixel_centers since ImageResizerState
+    // enforces that if align_corners_ is true, half_pixel_centers must be
+    // false.
+    ImageResizerState st(align_corners_, /*unused half_pixel_centers=*/false);
     st.ValidateAndCreateOutput(context, input);
 
     if (!context->status().ok()) return;
 
-    typename TTypes<T, 4>::ConstTensor input_data = input.tensor<T, 4>();
+    typename TTypes<T, 4>::ConstTensor input_data(input.tensor<T, 4>());
 
     // Precompute values used when iterating over x coordinates within a row.
     // Note that it may be useful to cache x_interps for a given
@@ -170,7 +173,7 @@ class ResizeAreaOp : public OpKernel {
                    : (v + 1 > in_x1 ? in_x1 - v : 1.0);
 
       v = ceil(in_x1);
-      x_interp.end = ceil(in_x1);
+      x_interp.end = v;
       v = x_interp.end - 1;
       x_interp.end_minus_one_scale =
           v < in_x ? (v + 1 > in_x1 ? st.width_scale : v + 1 - in_x)
@@ -191,8 +194,7 @@ class ResizeAreaOp : public OpKernel {
   void ComputeLoop(const ImageResizerState& st,
                    const std::vector<CachedInterpolation>& x_interps,
                    typename TTypes<T, 4>::ConstTensor input_data) {
-    typename TTypes<float, 4>::Tensor output_data =
-        st.output->tensor<float, 4>();
+    TTypes<float, 4>::Tensor output_data = st.output->tensor<float, 4>();
 
     // When using this algorithm for downsizing, the target pixel value is the
     // weighted average of all the source pixels. The weight is determined by
@@ -273,7 +275,7 @@ class ResizeAreaOp : public OpKernel {
 
  private:
   static EIGEN_ALWAYS_INLINE int64 Bound(int64 val, int64 limit) {
-    return std::min(limit - 1ll, std::max(0ll, val));
+    return std::min(limit - 1ll, std::max(int64{0}, val));
   }
 
   bool align_corners_;

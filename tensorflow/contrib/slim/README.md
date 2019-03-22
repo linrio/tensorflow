@@ -11,7 +11,7 @@ import tensorflow.contrib.slim as slim
 
 ## Why TF-Slim?
 
-TF-Slim is a library that makes building, training and evaluation neural
+TF-Slim is a library that makes defining, training and evaluating neural
 networks simple:
 
 * Allows the user to define models much more compactly by eliminating
@@ -78,7 +78,7 @@ provides convenience wrappers for variable creation and manipulation.
 ## Defining Models
 
 Models can be succinctly defined using TF-Slim by combining its variables,
-layers and scopes. Each of these elements are defined below.
+layers and scopes. Each of these elements is defined below.
 
 ### Variables
 
@@ -94,7 +94,7 @@ of thin wrapper functions in
 [variables.py](https://www.tensorflow.org/code/tensorflow/contrib/framework/python/ops/variables.py)
 which allow callers to easily define variables.
 
-For example, to create a `weight` variable, initialize it using a truncated
+For example, to create a `weights` variable, initialize it using a truncated
 normal distribution, regularize it with an `l2_loss` and place it on the `CPU`,
 one need only declare the following:
 
@@ -109,7 +109,7 @@ weights = slim.variable('weights',
 Note that in native TensorFlow, there are two types of variables: regular
 variables and local (transient) variables. The vast majority of variables are
 regular variables: once created, they can be saved to disk using a
-[saver](https://www.tensorflow.org/versions/r0.11/api_docs/python/state_ops.html#Saver).
+[saver](https://www.tensorflow.org/api_docs/python/tf/train/Saver).
 Local variables are those variables that only exist for the duration of a
 session and are not saved to disk.
 
@@ -145,7 +145,7 @@ regular_variables_and_model_variables = slim.get_variables()
 
 How does this work? When you create a model variable via TF-Slim's layers or
 directly via the `slim.model_variable` function, TF-Slim adds the variable to
-a the `tf.GraphKeys.MODEL_VARIABLES` collection. What if you have your own
+the `tf.GraphKeys.MODEL_VARIABLES` collection. What if you have your own
 custom layers or variable creation routine but still want TF-Slim to manage or
 be aware of your model variables? TF-Slim provides a convenience function for
 adding the model variable to its collection:
@@ -160,15 +160,15 @@ slim.add_model_variable(my_model_variable)
 
 ### Layers
 
-While the set of TensorFlow operations is quite extensive, developers of
-neural networks typically think of models in terms of higher level concepts
-like "layers", "losses", "metrics", and "networks". A layer,
-such as a Convolutional Layer, a Fully Connected Layer or a BatchNorm Layer
-are more abstract than a single TensorFlow operation and typically involve
-several operations. Furthermore, a layer usually (but not always) has
-variables (tunable parameters) associated with it, unlike more primitive
-operations. For example, a Convolutional Layer in a neural network
-is composed of several low level operations:
+While the set of TensorFlow operations is quite extensive, developers of neural
+networks typically think of models in terms of higher level concepts like
+"layers", "losses", "metrics", and "networks". A layer, such as a Convolutional
+Layer, a Fully Connected Layer or a BatchNorm Layer is more abstract than a
+single TensorFlow operation and typically involve several operations.
+Furthermore, a layer usually (but not always) has variables (tunable parameters)
+associated with it, unlike more primitive operations. For example, a
+Convolutional Layer in a neural network is composed of several low level
+operations:
 
 1. Creating the weight and bias variables
 2. Convolving the weights with the input from the previous layer
@@ -229,7 +229,7 @@ net = ...
 net = slim.conv2d(net, 256, [3, 3], scope='conv3_1')
 net = slim.conv2d(net, 256, [3, 3], scope='conv3_2')
 net = slim.conv2d(net, 256, [3, 3], scope='conv3_3')
-net = slim.max_pool2d(net, [2, 2], scope='pool3')
+net = slim.max_pool2d(net, [2, 2], scope='pool2')
 ```
 
 One way to reduce this code duplication would be via a `for` loop:
@@ -237,15 +237,15 @@ One way to reduce this code duplication would be via a `for` loop:
 ```python
 net = ...
 for i in range(3):
-  net = slim.conv2d(net, 256, [3, 3], scope='conv3_' % (i+1))
-net = slim.max_pool2d(net, [2, 2], scope='pool3')
+  net = slim.conv2d(net, 256, [3, 3], scope='conv3_%d' % (i+1))
+net = slim.max_pool2d(net, [2, 2], scope='pool2')
 ```
 
 This can be made even cleaner by using TF-Slim's `repeat` operation:
 
 ```python
 net = slim.repeat(net, 3, slim.conv2d, 256, [3, 3], scope='conv3')
-net = slim.max_pool(net, [2, 2], scope='pool2')
+net = slim.max_pool2d(net, [2, 2], scope='pool2')
 ```
 
 Notice that the `slim.repeat` not only applies the same argument in-line, it
@@ -289,10 +289,10 @@ slim.stack(x, slim.conv2d, [(32, [3, 3]), (32, [1, 1]), (64, [3, 3]), (64, [1, 1
 ### Scopes
 
 In addition to the types of scope mechanisms in TensorFlow
-([name_scope](https://www.tensorflow.org/api_docs/python/framework.html#name_scope),
-[variable_scope](https://www.tensorflow.org/api_docs/python/state_layers.html#variable_scope),
+([name_scope](https://www.tensorflow.org/api_docs/python/tf/name_scope),
+[variable_scope](https://www.tensorflow.org/api_docs/python/tf/variable_scope)),
 TF-Slim adds a new scoping mechanism called
-[arg_scope](https://www.tensorflow.org/code/tensorflow/contrib/framework/python/ops/arg_scope.py).
+[arg_scope](https://www.tensorflow.org/api_docs/python/tf/contrib/framework/arg_scope).
 This new scope allows a user to specify one or more operations and a set of
 arguments which will be passed to each of the operations defined in the
 `arg_scope`. This functionality is best illustrated by example. Consider the
@@ -352,7 +352,7 @@ we can both ensure that each layer uses the same values and simplify the code:
 ```
 
 As the example illustrates, the use of arg_scope makes the code cleaner,
-simpler and easier to maintain. Notice that while argument values are specifed
+simpler and easier to maintain. Notice that while argument values are specified
 in the arg_scope, they can be overwritten locally. In particular, while
 the padding argument has been set to 'SAME', the second convolution overrides
 it with the value of 'VALID'.
@@ -441,22 +441,22 @@ module. Consider the simple case where we want to train the VGG network:
 
 ```python
 import tensorflow as tf
-vgg = tf.contrib.slim.nets.vgg
+import tensorflow.contrib.slim.nets as nets
+vgg = nets.vgg
 
 # Load the images and labels.
 images, labels = ...
 
 # Create the model.
-predictions = vgg.vgg16(images)
+predictions, _ = vgg.vgg_16(images)
 
 # Define the loss functions and get the total loss.
 loss = slim.losses.softmax_cross_entropy(predictions, labels)
 ```
 
 In this example, we start by creating the model (using TF-Slim's VGG
-implementation), and add the standard classification loss. Now, lets turn
-to the case where we have a multi-task model that produces multiple outputs:
-
+implementation), and add the standard classification loss. Now, let's turn to
+the case where we have a multi-task model that produces multiple outputs:
 
 ```python
 # Load the images and labels.
@@ -505,7 +505,7 @@ regularization_loss = tf.add_n(slim.losses.get_regularization_losses())
 total_loss1 = classification_loss + sum_of_squares_loss + pose_loss + regularization_loss
 
 # (Regularization Loss is included in the total loss by default).
-total_loss2 = losses.get_total_loss()
+total_loss2 = slim.losses.get_total_loss()
 ```
 In this example, we can again either produce the total loss function manually
 or let TF-Slim know about the additional loss and let TF-Slim handle the losses.
@@ -554,14 +554,15 @@ that we'll save a model checkpoint every 10 minutes.
 
 ### Working Example: Training the VGG16 Model
 
-To illustrate this, lets
-examine the following sample of training the VGG network:
+To illustrate this, let's examine the following sample of training the VGG
+network:
 
 ```python
 import tensorflow as tf
+import tensorflow.contrib.slim.nets as nets
 
 slim = tf.contrib.slim
-vgg = tf.contrib.slim.nets.vgg
+vgg = nets.vgg
 
 ...
 
@@ -574,7 +575,7 @@ with tf.Graph().as_default():
   images, labels = ...
 
   # Define the model:
-  predictions = vgg.vgg16(images, is_training=True)
+  predictions = vgg.vgg_16(images, is_training=True)
 
   # Specify the loss function:
   slim.losses.softmax_cross_entropy(predictions, labels)
@@ -674,7 +675,7 @@ file were implicitly obtained from each provided variable's `var.op.name`.
 
 This works well when the variable names in the checkpoint file match those in
 the graph. However, sometimes, we want to restore a model from a checkpoint
-whose variables have different names those in the current graph. In this case,
+whose variables have different names to those in the current graph. In this case,
 we must provide the `Saver` a dictionary that maps from each checkpoint variable
 name to each graph variable. Consider the following example where the checkpoint
 variables names are obtained via a simple function:
@@ -736,7 +737,7 @@ slim.learning.train(train_op, log_dir, init_fn=init_fn)
 
 Once we've trained a model (or even while the model is busy training) we'd like
 to see how well the model performs in practice. This is accomplished by picking
-a set of evaluation metrics, which will grade the models performance, and the
+a set of evaluation metrics, which will grade the model's performance, and the
 evaluation code which actually loads the data, performs inference, compares the
 results to the ground truth and records the evaluation scores. This step may be
 performed once or repeated periodically.
@@ -759,8 +760,8 @@ parts:
 3. Finalization: (optionally) perform any final operation to compute metric
 values. For example, computing means, mins, maxes, etc.
 
-For example, to compute `mean_absolute_error`, two variables, a `count` and
-`total` variable are *initialized* to zero. During *aggregation*, we observed
+For example, to compute `mean_absolute_error`, two variables (`count` and
+`total`) are *initialized* to zero. During *aggregation*, we observed
 some set of predictions and labels, compute their absolute differences and add
 the total to `total`. Each time we observe another value,
 `count` is incremented. Finally, during *finalization*, `total` is divided
@@ -775,7 +776,7 @@ images, labels = LoadTestData(...)
 predictions = MyModel(images)
 
 mae_value_op, mae_update_op = slim.metrics.streaming_mean_absolute_error(predictions, labels)
-mre_value_op, mre_update_op = slim.metrics.streaming_mean_relative_error(predictions, labels, labels)
+mre_value_op, mre_update_op = slim.metrics.streaming_mean_relative_error(predictions, labels)
 pl_value_op, pl_update_op = slim.metrics.percentage_less(mean_relative_errors, 0.3)
 ```
 
@@ -809,9 +810,10 @@ Putting it all together:
 
 ```python
 import tensorflow as tf
+import tensorflow.contrib.slim.nets as nets
 
 slim = tf.contrib.slim
-vgg = tf.contrib.slim.nets.vgg
+vgg = nets.vgg
 
 
 # Load the data
@@ -836,7 +838,7 @@ with tf.Session() as sess:
   for batch_id in range(num_batches):
     sess.run(names_to_updates.values())
 
-  metric_values = sess.run(name_to_values.values())
+  metric_values = sess.run(names_to_values.values())
   for metric, value in zip(names_to_values.keys(), metric_values):
     print('Metric %s has value: %f' % (metric, value))
 ```
@@ -880,7 +882,7 @@ names_to_values, names_to_updates = slim.metrics.aggregate_metric_map({
 
 # Create the summary ops such that they also print out to std output:
 summary_ops = []
-for metric_name, metric_value in metrics_to_values.iteritems():
+for metric_name, metric_value in names_to_values.iteritems():
   op = tf.summary.scalar(metric_name, metric_value)
   op = tf.Print(op, [metric_value], metric_name)
   summary_ops.append(op)
@@ -906,3 +908,8 @@ slim.evaluation.evaluation_loop(
 
 ## Authors
 Sergio Guadarrama and Nathan Silberman
+
+## Citation
+"TensorFlow-Slim: a lightweight library for defining, training and evaluating complex models in TensorFlow"
+S. Guadarrama, N. Silberman, 2016.
+https://github.com/tensorflow/tensorflow/tree/master/tensorflow/contrib/slim
